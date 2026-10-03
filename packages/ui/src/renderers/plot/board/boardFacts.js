@@ -42,9 +42,10 @@ export function boardReferenceFacts(resolved, index) {
         ["Position", position(index.toScript(part.at))],
         ["Rotation", `${Number(part.rotation).toLocaleString(undefined, { maximumFractionDigits: 2 })}°`],
         ["Pads", String(pins)],
+        // The line that made it leads what the library says of it: it is where an edit goes.
+        ...(part.script ? [["Script", part.script]] : []),
         ...fields,
         ...(part.dnp ? [["DNP", "Not assembled"]] : []),
-        ...(part.script ? [["Script", part.script]] : []),
         id,
       ],
     };
@@ -118,9 +119,9 @@ export function schematicReferenceFacts(resolved, index) {
         ...(part.units.length > 1 ? [["Units", String(part.units.length)]] : []),
         ...(several && sheets.length ? [["Sheet", sheets.join(", ")]] : []),
         ["Pins", String(pins)],
+        ...(part.script ? [["Script", part.script]] : []),
         ...fields,
         ...(part.dnp ? [["DNP", "Not assembled"]] : []),
-        ...(part.script ? [["Script", part.script]] : []),
         id,
       ],
     };
