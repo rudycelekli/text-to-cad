@@ -274,4 +274,4 @@ board and schematic ([Show the model](#show-the-model)).
 - [Routing](references/routing.md): hand routing and Freerouting.
 - [Simulation](references/simulation.md): SPICE testbenches over the board's own subcircuits.
 - [Manufacturing](references/manufacturing.md): Gerbers, BOM, placement and ordering.
-- [Inspection](references/inspection.md): board references from the viewer, `pcb.read_board`, and the script line behind each part.
+- [Inspection](references/inspection.md): board and schematic references from the viewer, `pcb.read_board`, `pcb.read_schematic`, and the script line behind each part.

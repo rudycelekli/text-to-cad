@@ -60,12 +60,32 @@ reads it back. A board drawn in KiCad has none: find the part in its project ins
 1. The person picks in the viewer (Select, then copy) and writes what they want: "move
    `PCB/servo.kicad_pcb#C14` next to `#U3.9`", "this VIN track `#net:VIN@x57.6y21.6` is too
    thin".
-2. Resolve each reference with `pcb.read_board(...)`.
+2. Resolve each reference with `pcb.read_board(...)` (a schematic's with
+   `pcb.read_schematic(...)`).
 3. Edit the line `part.script` names, or the copper call near the resolved points.
 4. Run the script. The viewer shows the new board; KiCad's checks run on every build, and
    the viewer lists the board's DRC findings, each with references to the pads and parts in it.
 
 ## Schematics
 
-A `.kicad_sch` speaks the same selectors for its symbols, pins and nets (`#U3`, `#U3.9`,
-`#net:VIN`); copper and points are a board's alone.
+A `.kicad_sch` speaks the same selectors for its symbols, pins and nets: `#U3` a part,
+`#U3.9` pin 9 of U3, `#net:VIN` a net. Copper and points are a board's alone; a schematic
+refuses them.
+
+```python
+schematic = pcb.read_schematic("PCB/servo.kicad_sch")   # the root sheet; runs KiCad's netlist once
+part = schematic.resolve("PCB/servo.kicad_sch#U3")       # a Part: .script, .value, .lib, .footprint, .fields
+part.units                                               # each unit drawn: .unit, .sheet, .at, .rotation, .mirror
+pin = schematic.resolve("#U3.9")                         # a Pin: .net, .name, .type, .unit, .sheet
+net = schematic.resolve("#net:/Power/EN")                # a Net: .netclass, .nodes ("U3.9", ...), .pins, .parts, .labels
+schematic.sheets[pin.sheet].path                         # "/Power/": the sheet it is drawn on
+```
+
+Net names are KiCad's own. A cadgen schematic labels every net with the script's name
+(`VIN`, `TX/RX`); in one drawn in KiCad, a global label or power symbol names its net as
+written, a local or hierarchical label with its sheet's path (`/Power/EN`), and a net no
+label names is called after a pin on it (`Net-(D1-A)`); a pin left open is alone on a net of
+its own, `unconnected-(…)`. A sheet used twice in a hierarchy is two sheets, each with its
+own references. A part's `script` is the same line its footprint names on the board.
+Positions are the sheet's millimetres (y down, from the page's corner), for finding things
+on the sheet; the script never uses them.
