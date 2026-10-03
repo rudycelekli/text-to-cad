@@ -1,24 +1,43 @@
 """A KiCad board or schematic as the picture the CAD Viewer and ``cadgen pcb snapshot`` draw.
 
 KiCad draws it: ``kicad-cli`` plots the document to SVG, and the payload carries
-those SVGs unchanged (but for the timestamped ``<title>`` KiCad stamps on
-them). Nothing here re-implements KiCad's plotter -- not zones, not stroke-font
-text, not pad shapes -- so what the viewer shows is what KiCad shows.
+those SVGs as KiCad wrote them, but for two things: the timestamped ``<title>``
+KiCad stamps on each is dropped, and a board's drill holes are moved to a layer
+of their own (below). Nothing here re-implements KiCad's plotter -- not zones,
+not stroke-font text, not pad shapes -- so what the viewer shows is what KiCad
+shows.
 
-A board is one picture: its layers stacked back to front (bottom silkscreen
-and fabrication, bottom copper, inner copper deepest first, top copper, top
-silkscreen and fabrication, the outline), on KiCad's board background. A board
-with unrouted connections also gets its ratsnest: the DRC's unconnected pairs
-drawn as lines on a scratch layer of the staged copy (``Dwgs.User``, cleared
-first), so KiCad plots them in its own coordinates and a draft never looks
-finished.
+A board is one sheet of LAYERS, back to front: bottom fabrication and
+silkscreen, bottom copper, inner copper deepest first, top copper, top
+silkscreen and fabrication, the outline, and on a board with unrouted
+connections its ratsnest -- the DRC's unconnected pairs drawn as lines on a
+scratch layer of the staged copy (``Dwgs.User``, cleared first), so KiCad plots
+them in its own coordinates and a draft never looks finished. One
+``kicad-cli pcb export svg --mode-multi`` run plots them all, each to its own
+SVG on the same page; a second plots the copper again with every zone's fill
+removed (a layer's ``unpoured`` picture), when the board has fills. KiCad
+draws the drill holes on every layer it plots alone, where a plot of the whole
+stack draws them once, last: each layer's holes are cut from it and the
+copper's are the sheet's last layer, ``drills``. Drawn in order, the layers
+are KiCad's picture of the whole board.
+
+The sheet is KiCad's ``--fit-page-to-board`` page (millimetres, y down). Where
+the board lands on it is measured, not assumed: the staged copy carries a
+calibration circle of a radius nothing else has, on a layer the payload does
+not show, at a known point, and its place in that layer's SVG is the offset
+(a board whose outline's corner is at KiCad's (116, 77) lands at the sheet's
+origin). The payload's ``board`` is the board's index
+(:mod:`cadgen.kicad.board_index`) on that sheet, with ``origin``, the script's
+origin there, and ``findings``: everything the plot's one DRC run reported,
+each item with a board reference when it is a pad, a part's or copper.
 
 A schematic is one picture per sheet, the root first.
 
 Everything runs on a staged copy (``kicad-cli`` writes beside what it reads).
 The payload is derived data: cached in the store's ``drawing`` index, keyed by
-the document's bytes (a schematic's: every sheet beside it), this module's
-scheme and the KiCad version.
+the document's bytes (a board's with its project and rules files; a
+schematic's: every sheet beside it), this module's scheme and the KiCad
+version.
 """
 
 from __future__ import annotations
@@ -28,6 +47,7 @@ import json
 import re
 import shutil
 import tempfile
+from dataclasses import replace
 from pathlib import Path
 
 from cadgen.kicad import sexpr
@@ -42,13 +62,24 @@ __all__ = [
     "plot_payload_bytes",
 ]
 
-PLOT_SCHEMA_VERSION = 1
+PLOT_SCHEMA_VERSION = 2
 #: KiCad's default colour theme behind a board, and behind a schematic sheet.
 BOARD_BACKGROUND = "#001023"
 SCHEMATIC_BACKGROUND = "#F5F4EF"
 _RATSNEST_LAYER = "Dwgs.User"
 _RATSNEST_WIDTH = 0.1
+# The calibration mark: a circle of a radius KiCad's 4-decimal SVG prints as 0.4321, on a user
+# layer the payload never shows (added to a board that does not have it).
+_CALIBRATION_LAYER = (23, "Eco2.User")
+_CALIBRATION_RADIUS = 0.4321
 _SUFFIXES = (".kicad_pcb", ".kicad_sch")
+# A drill hole as KiCad's SVG plotter draws one: white (plated) or black (unplated) circles and
+# slots, filled or stroked, never anything else in its default theme.
+_DRILL_STYLE = re.compile(
+    r'^<g style="(?:fill:#(?:FFFFFF|000000); fill-opacity:1\.0000; stroke:none;'
+    r"|fill:none; stroke:#(?:FFFFFF|000000); stroke-width:[0-9.]+; stroke-opacity:1; stroke-linecap:round; stroke-linejoin:round;)\">$"
+)
+_CIRCLE = re.compile(r'<circle\s+cx="([-\d.]+)"\s+cy="([-\d.]+)"\s+r="([-\d.]+)"')
 
 
 class PlotError(ValueError):
@@ -102,8 +133,145 @@ def _clear_layer(node: list, layer: str) -> list:
     return kept
 
 
+def _unpoured(node: list) -> tuple[list, bool]:
+    """``node`` with every zone's fill removed (footprints' zones included), and whether it had any."""
+    kept: list = [node[0]]
+    removed = False
+    for child in node[1:]:
+        if isinstance(child, list) and child and child[0] in ("zone", "footprint"):
+            child, gone = _unpoured(child)
+            removed = removed or gone
+        elif isinstance(child, list) and child and child[0] in ("filled_polygon", "fill_segments"):
+            removed = True
+            continue
+        kept.append(child)
+    return kept, removed
+
+
+def _side(layer: str) -> str:
+    return "front" if layer.startswith("F.") else "back" if layer.startswith("B.") else "both"
+
+
+def _board_layers(tree: list) -> list[tuple[str, str, str]]:
+    """The layers a board's sheet stacks, back to front: (KiCad layer, kind, side)."""
+    declared = {str(entry[1]) for entry in (sexpr.find(tree, "layers") or [])[1:] if isinstance(entry, list) and len(entry) >= 2}
+    stack = [("B.Fab", "fab"), ("B.SilkS", "silk")]
+    stack += [(layer, "copper") for layer in _copper_order(tree)]
+    stack += [("F.SilkS", "silk"), ("F.Fab", "fab"), ("Edge.Cuts", "outline")]
+    return [(layer, kind, _side(layer)) for layer, kind in stack if layer in declared or kind == "copper"]
+
+
+def _name_layers(tree: list, names: dict[str, str]) -> None:
+    """Give each layer in ``names`` that user name in ``tree``'s layer table (a plot names each
+    layer's file after it), declaring the scratch and calibration layers when the board has not.
+    The table is replaced, not changed: ``tree`` may share it with the board as read."""
+    position = next((index for index, node in enumerate(tree) if sexpr.head(node) == "layers"), None)
+    if position is None:
+        raise PlotError("the board declares no layers")
+    table: list = [tree[position][0]]
+    seen = set()
+    for entry in tree[position][1:]:
+        if isinstance(entry, list) and len(entry) >= 3 and str(entry[1]) in names:
+            entry = [*entry[:3], names[str(entry[1])]]
+            seen.add(str(entry[1]))
+        table.append(entry)
+    for number, layer in ((17, _RATSNEST_LAYER), _CALIBRATION_LAYER):
+        if layer in names and layer not in seen:
+            table.append([number, layer, Sym("user"), names[layer]])
+    tree[position] = table
+
+
+def _drill_groups(svg: str) -> tuple[str, list[str]]:
+    """``svg`` without the drill holes KiCad draws last on a layer plotted alone, and those holes."""
+    end = svg.rindex("</svg>")
+    head, tail = svg[:end], svg[end:]
+    groups: list[str] = []
+    while True:
+        close = head.rfind("</g>")
+        opening = head.rfind("<g", 0, close) if close >= 0 else -1
+        if opening < 0:
+            break
+        tag_end = head.index(">", opening) + 1
+        if "<g" in head[tag_end:close] or not _DRILL_STYLE.match(re.sub(r"\s+", " ", head[opening:tag_end])):
+            break
+        groups.insert(0, head[opening:close + len("</g>")])
+        head = head[:opening].rstrip() + "\n"
+    return head + tail, groups
+
+
+def _drill_layer(svg: str, groups: list[str]) -> str:
+    """An SVG on ``svg``'s page holding only ``groups``."""
+    opened = svg.index(">", svg.index("<svg")) + 1
+    return svg[:opened] + "\n" + "\n".join(groups) + "\n</svg>\n"
+
+
+def _calibration(svg: str, at: tuple[float, float]) -> tuple[float, float]:
+    """Where KiCad's point ``at`` lands on the sheet: the offset that maps one to the other."""
+    marks = {
+        (float(x), float(y))
+        for x, y, radius in _CIRCLE.findall(svg)
+        if abs(float(radius) - _CALIBRATION_RADIUS) < 5e-5
+    }
+    if len(marks) != 1:
+        raise PlotError(f"KiCad's plot carries {len(marks)} calibration marks, not one; the board cannot be placed on its sheet")
+    (x, y), = marks
+    return round(at[0] - x, 4), round(at[1] - y, 4)
+
+
+def _drc_report(report: Path) -> list[tuple]:
+    """A DRC report's findings, each once, in KiCad's order: (check, severity, type,
+    description, ((text, uuid, (x, y) | None), ...)) in KiCad's frame."""
+    data = json.loads(Path(report).read_text(encoding="utf-8"))
+    found: list[tuple] = []
+    for key, check in (("violations", "drc"), ("unconnected_items", "unconnected"), ("schematic_parity", "parity")):
+        for violation in data.get(key, []) or []:
+            items = []
+            for item in violation.get("items", []) or []:
+                position = item.get("pos")
+                at = (float(position.get("x", 0.0)), float(position.get("y", 0.0))) if isinstance(position, dict) else None
+                items.append((str(item.get("description", "")), str(item.get("uuid", "")), at))
+            found.append((
+                check,
+                str(violation.get("severity", "error")),
+                str(violation.get("type", "")),
+                str(violation.get("description", "")),
+                tuple(items),
+            ))
+    return list(dict.fromkeys(found))  # a through-hole pad's DRC fires once per copper layer
+
+
+def _marker_point(index) -> tuple[float, float]:
+    """A point inside what KiCad fits the page to: the middle of the outline, else of the parts."""
+    points = [point for line in index.outline for point in line] or [point for part in index.parts for point in part.outline]
+    if not points:
+        return 0.0, 0.0
+    xs, ys = [point[0] for point in points], [point[1] for point in points]
+    return round((min(xs) + max(xs)) / 2, 4), round((min(ys) + max(ys)) / 2, 4)
+
+
+def _export(install, stage: Path, board: str, layers: list[str], folder: str) -> None:
+    from cadgen.kicad.cli import run_kicad_cli
+
+    run_kicad_cli(
+        install,
+        [
+            "pcb", "export", "svg", "--mode-multi", "--fit-page-to-board", "--exclude-drawing-sheet",
+            "--layers", ",".join(layers), "-o", folder, board,
+        ],
+        cwd=stage,
+    )
+
+
+def _plotted(stage: Path, folder: str, token: str) -> str:
+    found = [path for path in (stage / folder).glob("*.svg") if path.name.endswith(f"-{token}.svg")]
+    if len(found) != 1:
+        raise PlotError(f"KiCad's plot of the board is missing a layer ({token})")
+    return _strip_stamps(found[0].read_text(encoding="utf-8"))
+
+
 def _board_payload(path: Path, install) -> dict:
-    from cadgen.kicad.cli import drc_findings, run_kicad_cli
+    from cadgen.kicad.board_index import Finding, FindingItem, read_index, script_frame
+    from cadgen.kicad.cli import run_kicad_cli
 
     text = path.read_text(encoding="utf-8")
     try:
@@ -112,50 +280,82 @@ def _board_payload(path: Path, install) -> dict:
         raise PlotError(f"{path.name} is not a readable KiCad board ({error})") from None
     if sexpr.head(tree) != "kicad_pcb":
         raise PlotError(f"{path.name} is not a KiCad board")
+    index = read_index(tree, project=path.with_suffix(".kicad_pro"))
+    stack = _board_layers(tree)
     with tempfile.TemporaryDirectory(prefix="cadgen-kicad-plot-") as folder:
         stage = Path(folder)
         staged = stage / path.name
         staged.write_text(text, encoding="utf-8")
-        project = path.with_suffix(".kicad_pro")
-        if project.is_file():
-            shutil.copy2(project, stage / project.name)
-        # The DRC is asked for one thing: what is still unconnected.
+        for sibling in (path.with_suffix(".kicad_pro"), path.with_suffix(".kicad_dru")):
+            if sibling.is_file():
+                shutil.copy2(sibling, stage / sibling.name)
+        # One DRC: what is still unconnected (the ratsnest), and every finding the viewer lists.
         run_kicad_cli(install, ["pcb", "drc", "--format", "json", "-o", "drc.json", path.name], cwd=stage)
-        unconnected = [finding for finding in drc_findings(stage / "drc.json", to_script=lambda x, y: (x, y)) if finding.check == "unconnected"]
-        layers = ["B.Fab", "B.SilkS", *_copper_order(tree), "F.SilkS", "F.Fab", "Edge.Cuts"]
-        if unconnected:
-            marked = _clear_layer(tree, _RATSNEST_LAYER)
-            for index, finding in enumerate(unconnected):
-                points = [position for _text, position in finding.items if position is not None]
-                if len(points) < 2:
-                    continue
-                (x1, y1), (x2, y2) = points[0], points[1]
-                marked.insert(
-                    len(marked) - 1,
-                    [
-                        Sym("gr_line"),
-                        [Sym("start"), x1, y1],
-                        [Sym("end"), x2, y2],
-                        [Sym("stroke"), [Sym("width"), _RATSNEST_WIDTH], [Sym("type"), Sym("solid")]],
-                        [Sym("layer"), _RATSNEST_LAYER],
-                        [Sym("uuid"), f"00000000-0000-4000-8000-{index:012d}"],
-                    ],
-                )
-            staged.write_text(sexpr.dumps(marked), encoding="utf-8")
-            layers.append(_RATSNEST_LAYER)
-        run_kicad_cli(
-            install,
-            [
-                "pcb", "export", "svg", "--mode-single", "--fit-page-to-board", "--exclude-drawing-sheet",
-                "--layers", ",".join(layers), "-o", "board.svg", path.name,
-            ],
-            cwd=stage,
+        report = _drc_report(stage / "drc.json")
+        unconnected = [finding for finding in report if finding[0] == "unconnected"]
+        marked = _clear_layer(tree, _RATSNEST_LAYER) if unconnected else list(tree)  # a new list; children shared, never changed
+        for number, finding in enumerate(unconnected):
+            points = [at for _text, _uuid, at in finding[4] if at is not None]
+            if len(points) < 2:
+                continue
+            (x1, y1), (x2, y2) = points[0], points[1]
+            marked.insert(len(marked) - 1, [
+                Sym("gr_line"), [Sym("start"), x1, y1], [Sym("end"), x2, y2],
+                [Sym("stroke"), [Sym("width"), _RATSNEST_WIDTH], [Sym("type"), Sym("solid")]],
+                [Sym("layer"), _RATSNEST_LAYER], [Sym("uuid"), f"00000000-0000-4000-8000-{number:012d}"],
+            ])
+        mark = _marker_point(index)
+        marked.insert(len(marked) - 1, [
+            Sym("gr_circle"), [Sym("center"), *mark], [Sym("end"), round(mark[0] + _CALIBRATION_RADIUS, 4), mark[1]],
+            [Sym("stroke"), [Sym("width"), 0.01], [Sym("type"), Sym("solid")]], [Sym("fill"), Sym("no")],
+            [Sym("layer"), _CALIBRATION_LAYER[1]], [Sym("uuid"), "00000000-0000-4000-8000-ca1b0a7e0000"],
+        ])
+        plotted = [layer for layer, _kind, _side in stack] + ([_RATSNEST_LAYER] if unconnected else []) + [_CALIBRATION_LAYER[1]]
+        tokens = {layer: f"cadgenplot{number:02d}" for number, layer in enumerate(plotted)}
+        _name_layers(marked, tokens)
+        staged.write_text(sexpr.dumps(marked), encoding="utf-8")
+        _export(install, stage, path.name, plotted, "poured")
+        offset = _calibration(_plotted(stage, "poured", tokens[_CALIBRATION_LAYER[1]]), mark)
+        copper = [layer for layer, kind, _side in stack if kind == "copper"]
+        bare, filled = _unpoured(marked)
+        unpoured: dict[str, str] = {}
+        if filled:
+            staged.write_text(sexpr.dumps(bare), encoding="utf-8")
+            _export(install, stage, path.name, copper + [_CALIBRATION_LAYER[1]], "unpoured")
+            if _calibration(_plotted(stage, "unpoured", tokens[_CALIBRATION_LAYER[1]]), mark) != offset:
+                raise PlotError(f"KiCad placed {path.name} differently on its two plots")
+            unpoured = {layer: _drill_groups(_plotted(stage, "unpoured", tokens[layer]))[0] for layer in copper}
+        layers = []
+        drills: dict[str, None] = {}
+        page = ""
+        for layer, kind, side in stack + ([(_RATSNEST_LAYER, "ratsnest", "both")] if unconnected else []):
+            svg, holes = _drill_groups(_plotted(stage, "poured", tokens[layer]))
+            page = page or svg
+            if kind == "copper":
+                drills.update(dict.fromkeys(holes))
+            entry = {"id": "ratsnest" if kind == "ratsnest" else layer, "kind": kind, "side": side, "svg": svg}
+            if layer in unpoured and unpoured[layer] != svg:
+                entry["unpoured"] = unpoured[layer]
+            layers.append(entry)
+        if drills:
+            layers.append({"id": "drills", "kind": "drill", "side": "both", "svg": _drill_layer(page, list(drills))})
+    width, height = _svg_size(page)
+    to_script = script_frame(index.origin)
+    findings = tuple(
+        Finding(
+            check=check, severity=severity, type=kind, description=description,
+            items=tuple(
+                FindingItem(text=item_text, ref=index.item_ref(uuid, to_script(*at) if at else None), at=at)
+                for item_text, uuid, at in items
+            ),
         )
-        svg = _strip_stamps((stage / "board.svg").read_text(encoding="utf-8"))
-    width, height = _svg_size(svg)
+        for check, severity, kind, description, items in report
+    )
+    sheet = replace(index, findings=findings).mapped(lambda x, y: (x - offset[0], y - offset[1]))
     return {
         "kind": "board",
-        "sheets": [{"name": path.stem, "svg": svg, "width": width, "height": height, "background": BOARD_BACKGROUND}],
+        "sheets": [{"name": path.stem, "width": width, "height": height, "background": BOARD_BACKGROUND, "layers": layers}],
+        "board": sheet.as_json(),
         "unrouted": len(unconnected),
     }
 
@@ -208,8 +408,13 @@ def build_plot(path: Path, *, install=None) -> dict:
 
 
 def _document_hash(path: Path) -> str:
+    """The bytes a plot is drawn from: a board's file and the project and rules beside it (the
+    DRC's findings and the nets' classes read them), a schematic's every sheet."""
     digest = hashlib.sha256()
-    files = [path] if path.suffix.lower() == ".kicad_pcb" else _schematic_files(path)
+    if path.suffix.lower() == ".kicad_pcb":
+        files = [path] + [sibling for sibling in (path.with_suffix(".kicad_pro"), path.with_suffix(".kicad_dru")) if sibling.is_file()]
+    else:
+        files = _schematic_files(path)
     for entry in files:
         digest.update(entry.name.encode("utf-8") + b"\0")
         digest.update(hashlib.sha256(entry.read_bytes()).digest())

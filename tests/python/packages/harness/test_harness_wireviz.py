@@ -131,7 +131,7 @@ class HarnessWirevizTest(unittest.TestCase):
         status, body = plot_payload_response(str(self.folder), "cable.harness.yml")
         self.assertEqual(status, 200)
         payload = json.loads(body)
-        self.assertEqual((payload["schemaVersion"], payload["kind"], payload["unrouted"]), (1, "harness", None))
+        self.assertEqual((payload["schemaVersion"], payload["kind"], payload["unrouted"]), (2, "harness", None))
         [sheet] = payload["sheets"]
         self.assertEqual((sheet["name"], sheet["background"]), ("cable", "#ffffff"))
         self.assertIn("<svg", sheet["svg"])

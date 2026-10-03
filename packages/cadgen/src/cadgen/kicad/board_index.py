@@ -352,7 +352,69 @@ class BoardIndex:
             holes=tuple(replace(hole, at=point(hole.at)) for hole in self.holes),
             outline=tuple(points(line) for line in self.outline),
             origin=point(self.origin),
+            findings=tuple(
+                replace(finding, items=tuple(
+                    replace(item, at=point(item.at) if item.at is not None else None) for item in finding.items
+                ))
+                for finding in self.findings
+            ),
         )
+
+    def as_json(self, digits: int = 4) -> dict:
+        """The index as the plot payload's ``board``: every point in this frame, rounded to
+        ``digits`` decimals (a tenth of a micron at 4)."""
+
+        def num(value: float) -> float:
+            rounded = round(float(value), digits)
+            return 0.0 if rounded == 0 else rounded
+
+        def xy(point: XY) -> list[float]:
+            return [num(point[0]), num(point[1])]
+
+        def path(points: Iterable[XY]) -> list[list[float]]:
+            return [xy(point) for point in points]
+
+        return {
+            "origin": xy(self.origin),
+            "parts": [
+                {
+                    "ref": part.ref, "value": part.value, "footprint": part.footprint, "side": part.side,
+                    "at": xy(part.at), "rotation": num(part.rotation), "fields": dict(part.fields),
+                    "script": part.script, "dnp": part.dnp, "outline": path(part.outline),
+                }
+                for part in self.parts
+            ],
+            "pads": [
+                {
+                    "part": pad.part, "number": pad.number, "name": pad.name, "net": pad.net, "type": pad.type,
+                    "side": pad.side, "at": xy(pad.at), "polygon": path(pad.polygon),
+                }
+                for pad in self.pads
+            ],
+            "tracks": [
+                {"net": track.net, "layer": track.layer, "width": num(track.width), "points": path(track.points)}
+                for track in self.tracks
+            ],
+            "vias": [
+                {"net": via.net, "at": xy(via.at), "diameter": num(via.diameter), "drill": num(via.drill)}
+                for via in self.vias
+            ],
+            "zones": [{"net": zone.net, "layer": zone.layer, "outline": path(zone.outline)} for zone in self.zones],
+            "holes": [{"at": xy(hole.at), "diameter": num(hole.diameter), "part": hole.part} for hole in self.holes],
+            "outline": [path(line) for line in self.outline],
+            "nets": [{"name": name, "class": netclass} for name, netclass in self.nets],
+            "findings": [
+                {
+                    "check": finding.check, "severity": finding.severity, "type": finding.type,
+                    "description": finding.description,
+                    "items": [
+                        {"text": item.text, "ref": item.ref, "at": xy(item.at) if item.at is not None else None}
+                        for item in finding.items
+                    ],
+                }
+                for finding in self.findings
+            ],
+        }
 
     def item_ref(self, uuid: str | None, at: XY | None = None) -> str | None:
         """A board reference to the item with ``uuid``: a pad's, its part's (for anything a
@@ -956,18 +1018,21 @@ def _netclass(name: str, assigned: Mapping[str, str], patterns: Sequence[tuple[s
     return "Default"
 
 
-def read_index(text: str, *, project: Path | None = None) -> BoardIndex:
-    """The board ``text`` (a ``.kicad_pcb``'s) as an index in KiCad's frame.
+def read_index(text: str | list, *, project: Path | None = None) -> BoardIndex:
+    """The board ``text`` (a ``.kicad_pcb``'s, or its parsed tree) as an index in KiCad's frame.
 
     ``project`` is the ``.kicad_pcb``'s ``.kicad_pro``, read for the nets' classes when it
     exists. Raises ``ValueError`` for text that is not a KiCad board.
     """
     from cadgen.kicad.check import _origin
 
-    try:
-        tree = sexpr.parse(text)
-    except sexpr.SexprError as error:
-        raise ValueError(f"not a readable KiCad board ({error})") from None
+    if isinstance(text, list):
+        tree = text
+    else:
+        try:
+            tree = sexpr.parse(text)
+        except sexpr.SexprError as error:
+            raise ValueError(f"not a readable KiCad board ({error})") from None
     if sexpr.head(tree) != "kicad_pcb":
         raise ValueError("not a KiCad board: a .kicad_pcb starts with (kicad_pcb ...)")
     table = _net_names(tree)
