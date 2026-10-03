@@ -31,6 +31,8 @@ import {
 } from "@text-to-cad/core/lib/drawing2d/transform.js";
 import { IDLE_PIXEL_RATIO_CAP, getPixelRatioCap } from "../viewport/pixelRatio.js";
 
+/** How far a press may wander and still be a tap rather than a pan, in CSS pixels. */
+export const TAP_SLOP_PX = 4;
 /** Wheel notches to zoom factor. A notch is ~100 px of delta on most mice. */
 const WHEEL_ZOOM_SPEED = 0.0015;
 /** A trackpad pinch arrives as a ctrl-wheel with much smaller deltas. */
@@ -55,8 +57,15 @@ function wheelZoomFactor(event) {
  *   view, with the transform to remember. Called with null for a fit.
  * @param {(ctx: CanvasRenderingContext2D, frame: object) => void} options.paint  One whole frame.
  * @param {string} [options.noun]  What the picture is called in an error ("drawing", "board").
+ * @param {{ onTap?: (point: {x: number, y: number}, event: PointerEvent) => void,
+ *   onHover?: (point: {x: number, y: number} | null, event: PointerEvent) => void,
+ *   onDoubleTap?: (point: {x: number, y: number}, event: MouseEvent) => boolean }} [options.picking]
+ *   For a picture whose parts can be pointed at (a KiCad board's): a press that did not move
+ *   (`onTap`, within `TAP_SLOP_PX`, one finger or button), the pointer over the picture with no
+ *   button down (`onHover`, null as it leaves), and a double-click, which fits the view unless
+ *   `onDoubleTap` answers that it used it. Points are in the pane's CSS pixels.
  */
-export function usePlaneView({ content, bounds, restored = null, colorScheme = "light", onViewMoved, paint: paintFrame, noun = "picture" }) {
+export function usePlaneView({ content, bounds, restored = null, colorScheme = "light", onViewMoved, paint: paintFrame, noun = "picture", picking = null }) {
   const containerRef = useRef(null);
   const canvasRef = useRef(null);
   const contextRef = useRef(null);
@@ -77,6 +86,8 @@ export function usePlaneView({ content, bounds, restored = null, colorScheme = "
   paintFrameRef.current = paintFrame;
   const [dragging, setDragging] = useState(false);
   const frameRef = useRef(0);
+  const pickingRef = useRef(picking);
+  pickingRef.current = picking;
 
   const paint = useCallback(() => {
     frameRef.current = 0;
@@ -239,20 +250,28 @@ export function usePlaneView({ content, bounds, restored = null, colorScheme = "
       pinchState.centre = { x: (first.x + second.x) / 2, y: (first.y + second.y) / 2 };
     };
 
+    // A press is a tap until it moves past the slop or a second pointer joins it.
+    let press = null;
     const onPointerDown = (event) => {
       // Primary press only: a secondary or middle press belongs to whatever the
       // host puts on them, not to panning.
       if (event.pointerType === "mouse" && event.button !== 0) return;
       canvas.setPointerCapture?.(event.pointerId);
-      pointers.set(event.pointerId, local(event));
+      const point = local(event);
+      pointers.set(event.pointerId, point);
+      press = pointers.size === 1 ? { id: event.pointerId, x: point.x, y: point.y } : null;
       if (pointers.size === 2) measurePinch();
       if (pointers.size === 1) setDragging(true);
       event.preventDefault();
     };
     const onPointerMove = (event) => {
       const previous = pointers.get(event.pointerId);
-      if (!previous) return;
+      if (!previous) {
+        if (!pointers.size) pickingRef.current?.onHover?.(local(event), event);
+        return;
+      }
       const point = local(event);
+      if (press && Math.hypot(point.x - press.x, point.y - press.y) > TAP_SLOP_PX) press = null;
       pointers.set(event.pointerId, point);
       const transform = transformRef.current;
       if (!transform) return;
@@ -273,7 +292,11 @@ export function usePlaneView({ content, bounds, restored = null, colorScheme = "
       canvas.releasePointerCapture?.(event.pointerId);
       if (pointers.size === 2) measurePinch();
       if (pointers.size === 0) setDragging(false);
+      const tapped = press && press.id === event.pointerId && event.type === "pointerup";
+      press = null;
+      if (tapped) pickingRef.current?.onTap?.(local(event), event);
     };
+    const onPointerLeave = (event) => { if (!pointers.size) pickingRef.current?.onHover?.(null, event); };
     const onWheel = (event) => {
       if (!transformRef.current) return;
       // The page must not scroll under a picture being zoomed, so this listener
@@ -281,12 +304,16 @@ export function usePlaneView({ content, bounds, restored = null, colorScheme = "
       event.preventDefault();
       zoomBy(wheelZoomFactor(event), local(event));
     };
-    const onDoubleClick = (event) => { event.preventDefault(); fit(); };
+    const onDoubleClick = (event) => {
+      event.preventDefault();
+      if (!pickingRef.current?.onDoubleTap?.(local(event), event)) fit();
+    };
 
     canvas.addEventListener("pointerdown", onPointerDown);
     canvas.addEventListener("pointermove", onPointerMove);
     canvas.addEventListener("pointerup", onPointerUp);
     canvas.addEventListener("pointercancel", onPointerUp);
+    canvas.addEventListener("pointerleave", onPointerLeave);
     canvas.addEventListener("wheel", onWheel, { passive: false });
     canvas.addEventListener("dblclick", onDoubleClick);
     return () => {
@@ -294,6 +321,7 @@ export function usePlaneView({ content, bounds, restored = null, colorScheme = "
       canvas.removeEventListener("pointermove", onPointerMove);
       canvas.removeEventListener("pointerup", onPointerUp);
       canvas.removeEventListener("pointercancel", onPointerUp);
+      canvas.removeEventListener("pointerleave", onPointerLeave);
       canvas.removeEventListener("wheel", onWheel);
       canvas.removeEventListener("dblclick", onDoubleClick);
     };
@@ -311,5 +339,5 @@ export function usePlaneView({ content, bounds, restored = null, colorScheme = "
     }, "image/png");
   }), []);
 
-  return { containerRef, canvasRef, dragging, fit, zoomBy, capture, requestPaint, paintNow, transformRef, schemeRef };
+  return { containerRef, canvasRef, dragging, fit, zoomBy, setView: moveTo, capture, requestPaint, paintNow, transformRef, schemeRef };
 }
