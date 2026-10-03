@@ -167,10 +167,13 @@ def _without_canary(findings: list[Finding]) -> tuple[list[Finding], bool]:
     return kept, len(kept) != len(findings)
 
 
-def build_board(board: Board, *, name: str, install: KicadInstall | None = None) -> BoardBuild:
-    """The board's documents, its zones filled by KiCad, and KiCad's findings."""
+def build_board(board: Board, *, name: str, install: KicadInstall | None = None, script_root=None) -> BoardBuild:
+    """The board's documents, its zones filled by KiCad, and KiCad's findings.
+
+    ``script_root`` is the model script's folder, which the parts' ``Script`` fields are relative to.
+    """
     install = install or find_kicad()
-    texts = project_texts(board, name=name)
+    texts = project_texts(board, name=name, script_root=script_root)
     pcb_tree, pcb_text = texts.pcb_tree, texts.pcb
     if board.autoroute_request is not None:
         # Freerouting routes first, so its tracks are filled around and checked like drawn ones.

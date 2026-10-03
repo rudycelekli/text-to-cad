@@ -27,7 +27,7 @@ import math
 from dataclasses import dataclass
 
 from cadgen.kicad import sexpr
-from cadgen.kicad.design import Board, Part, Pin, _natural, kicad_net_name, unit_letter
+from cadgen.kicad.design import SCRIPT_FIELD, Board, Part, Pin, _natural, kicad_net_name, script_reference, unit_letter
 from cadgen.kicad.ids import Ids
 from cadgen.kicad.outline import outline_bounds, outline_segments, polygon_rings
 from cadgen.kicad.sexpr import Sym
@@ -289,6 +289,7 @@ def _place_footprint(
     board: Board,
     symbol_path: str,
     sheetfile: str,
+    script_root=None,
 ) -> list:
     library = part.footprint
     placement = part._require_placement()
@@ -302,7 +303,7 @@ def _place_footprint(
     pad_counter = 0
     item_counter = 0
     properties_seen: set[str] = set()
-    fields = part.fields
+    fields = part.document_fields(script_root)  # the symbol carries the same, Script included
     for item in body:
         if not isinstance(item, list):
             continue
@@ -468,9 +469,10 @@ def _attr(flags: list, part: Part) -> list:
     return [Sym("attr"), *(Sym(flag) for flag in known + sorted(kept - set(_ATTR_ORDER)))]
 
 
-def _hole_footprint(index: int, ref: str, hole, *, frame: Frame, ids: Ids) -> list:
+def _hole_footprint(index: int, ref: str, hole, *, frame: Frame, ids: Ids, script_root=None) -> list:
     size = hole.diameter
-    return [
+    script = script_reference(hole.script, script_root)
+    node = [
         Sym("footprint"),
         f"cadgen:Hole_{size:g}mm",
         [Sym("layer"), "F.Cu"],
@@ -484,6 +486,12 @@ def _hole_footprint(index: int, ref: str, hole, *, frame: Frame, ids: Ids) -> li
         [Sym("pad"), "", Sym("np_thru_hole"), Sym("circle"), [Sym("at"), 0, 0], [Sym("size"), size, size], [Sym("drill"), size],
          [Sym("layers"), "*.Cu", "*.Mask"], [Sym("uuid"), ids(f"hole:{index}:pad")]],
     ]
+    if script is not None:
+        # The line that made the hole, as a part's: a hole has no symbol, so nothing compares it.
+        node.insert(7, [Sym("property"), SCRIPT_FIELD, script, [Sym("at"), 0, 0], [Sym("layer"), "F.Fab"], [Sym("hide"), Sym("yes")],
+                        [Sym("uuid"), ids(f"hole:{index}:script")],
+                        [Sym("effects"), [Sym("font"), [Sym("size"), 1, 1], [Sym("thickness"), 0.15]]]])
+    return node
 
 
 # --- board items -----------------------------------------------------------------
@@ -590,8 +598,9 @@ def _hole_refs(board: Board) -> list[str]:
     return refs
 
 
-def board_document(board: Board, *, project: str, frame: Frame, symbol_paths: dict[str, str]) -> list:
-    """The ``.kicad_pcb`` tree. ``symbol_paths`` maps a reference to its symbol's sheet path."""
+def board_document(board: Board, *, project: str, frame: Frame, symbol_paths: dict[str, str], script_root=None) -> list:
+    """The ``.kicad_pcb`` tree. ``symbol_paths`` maps a reference to its symbol's sheet path;
+    ``script_root`` is the model script's folder, which ``Script`` fields are relative to."""
     ids = Ids(project)
     origin = frame.origin
     title_block: list = [Sym("title_block"), [Sym("title"), board.title or project]]
@@ -617,10 +626,13 @@ def board_document(board: Board, *, project: str, frame: Frame, symbol_paths: di
     sheetfile = f"{project}.kicad_sch"
     for part in sorted(board.parts, key=lambda part: _natural(part.ref)):
         document.append(
-            _place_footprint(part, frame=frame, ids=ids, board=board, symbol_path=symbol_paths[part.ref], sheetfile=sheetfile)
+            _place_footprint(
+                part, frame=frame, ids=ids, board=board, symbol_path=symbol_paths[part.ref], sheetfile=sheetfile,
+                script_root=script_root,
+            )
         )
     for index, (hole, ref) in enumerate(zip(board.holes, _hole_refs(board))):
-        document.append(_hole_footprint(index, ref, hole, frame=frame, ids=ids))
+        document.append(_hole_footprint(index, ref, hole, frame=frame, ids=ids, script_root=script_root))
     document.extend(_edge_items(board, frame=frame, ids=ids))
     for index, text in enumerate(board.texts):
         document.append(_text(board, text, index, frame=frame, ids=ids))

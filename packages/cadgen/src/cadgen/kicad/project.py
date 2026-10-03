@@ -36,8 +36,13 @@ def rules_text(rules: list[list]) -> str:
     return "(version 1)\n" + "".join(sexpr.dumps(rule) for rule in rules)
 
 
-def project_texts(board: Board, *, name: str) -> ProjectTexts:
-    """The project's documents, or :class:`DesignError` naming what to fix first."""
+def project_texts(board: Board, *, name: str, script_root=None) -> ProjectTexts:
+    """The project's documents, or :class:`DesignError` naming what to fix first.
+
+    ``script_root`` is the model script's folder: each part's hidden ``Script``
+    field names its line by a path relative to it (the file's name alone when
+    no folder is given or the line is outside it).
+    """
     if not isinstance(board, Board):
         raise DesignError(f"a @pcb function returns a pcb.Board, got {type(board).__name__}")
     problems = board.problems()
@@ -50,8 +55,10 @@ def project_texts(board: Board, *, name: str) -> ProjectTexts:
 
     power_flag_nets = [net.name for net in board.nets if net.power_flag]
     frame = Frame.for_outline(board.outline)
-    sch_tree, paths = schematic_document(board, project=name, net_of_pin=net_of_pin, power_flag_nets=power_flag_nets)
-    pcb_tree = board_document(board, project=name, frame=frame, symbol_paths=paths)
+    sch_tree, paths = schematic_document(
+        board, project=name, net_of_pin=net_of_pin, power_flag_nets=power_flag_nets, script_root=script_root
+    )
+    pcb_tree = board_document(board, project=name, frame=frame, symbol_paths=paths, script_root=script_root)
     pro = project_document(board, project=name, root_uuid=Ids(name).of("sheet:/"))
     return ProjectTexts(
         name=name,

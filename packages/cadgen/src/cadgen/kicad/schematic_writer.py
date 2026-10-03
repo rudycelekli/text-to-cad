@@ -210,10 +210,13 @@ def _library_property_at(symbol: Symbol, key: str) -> tuple[float, float, float]
     return float(at[1]), float(at[2]), float(at[3]) if len(at) > 3 else 0.0
 
 
-def schematic_document(board: Board, *, project: str, net_of_pin, power_flag_nets: list[str]) -> tuple[list, dict[str, str]]:
+def schematic_document(
+    board: Board, *, project: str, net_of_pin, power_flag_nets: list[str], script_root=None
+) -> tuple[list, dict[str, str]]:
     """The ``.kicad_sch`` tree, and each reference's symbol path for the board's footprints.
 
-    ``net_of_pin(part, number)`` names the net a pin is on, or ``None``.
+    ``net_of_pin(part, number)`` names the net a pin is on, or ``None``; ``script_root``
+    is the model script's folder, which ``Script`` fields are relative to.
     """
     ids = Ids(project)
     root = ids("sheet:/")
@@ -273,8 +276,9 @@ def schematic_document(board: Board, *, project: str, net_of_pin, power_flag_net
             fields.append(("Datasheet", symbol.properties.get("Datasheet", ""), True))
             fields.append(("Description", symbol.properties.get("Description", ""), True))
             # The library symbol's own fields travel with it (a diode's Sim.Device, so KiCad's
-            # simulator can read the schematic), then the part's properties=.
-            fields.extend((key_, value_, True) for key_, value_ in sorted(unit.part.fields.items()))
+            # simulator can read the schematic), then the part's properties= and the script line
+            # that made it (the footprint carries the same: KiCad's parity check compares them).
+            fields.extend((key_, value_, True) for key_, value_ in sorted(unit.part.document_fields(script_root).items()))
         else:
             fields.append(("Footprint", "", True))
             fields.append(("Datasheet", "", True))

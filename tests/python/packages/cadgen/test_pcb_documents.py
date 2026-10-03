@@ -12,6 +12,7 @@ KiCad suite's (tests/python/packages/kicad).
 from __future__ import annotations
 
 import json
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -223,6 +224,50 @@ class PcbDocumentsTest(unittest.TestCase):
             self.assertEqual((carried["Sim.Enable"], carried["LCSC"]), ("0", "C1"))
         overridden = self.board().part("Test:FIDUCIAL", footprint="Test:ONE_PAD", properties={"Sim.Enable": "1"})
         self.assertEqual(overridden.fields, {"Sim.Enable": "1"})
+
+    def test_each_part_and_hole_names_the_script_line_that_made_it(self) -> None:
+        # board.part() and board.hole() remember the first line outside cadgen that called them,
+        # and both documents carry it as a hidden Script field: the symbol's and the footprint's
+        # agree, so KiCad's parity check stays clean.
+        board = self.board()
+        part_line = sys._getframe().f_lineno + 1
+        spare = board.part("Test:R", footprint="Test:R_0603", value="0R", ref="R9")
+        board.no_connect(spare[1], spare[2])
+        board.place(spare, at=(-15, 10))
+        hole_line = sys._getframe().f_lineno + 1
+        board.hole(at=(15, 10), diameter=2)
+        here = Path(__file__).resolve()
+        self.assertEqual((Path(spare.script[0]).resolve(), spare.script[1]), (here, part_line))
+
+        def script_fields(texts) -> tuple[str, str, str]:
+            symbol = next(
+                node for node in sexpr.find_all(sexpr.parse(texts.sch), "symbol")
+                if sexpr.find(node, "lib_id") is not None
+                and any(prop[1] == "Reference" and prop[2] == "R9" for prop in sexpr.find_all(node, "property"))
+            )
+            found = []
+            for node in (symbol, _footprint(texts.pcb_tree, "R9"), _footprint(texts.pcb_tree, "H1")):
+                [field] = [prop for prop in sexpr.find_all(node, "property") if prop[1] == "Script"]
+                self.assertEqual(sexpr.value(field, "hide"), "yes")
+                found.append(field[2])
+            return tuple(found)
+
+        # Relative to the model script's folder, with / between folders; the file's name alone
+        # when no folder is known or the line lies outside it.
+        nested = script_fields(project_texts(board, name="amp", script_root=here.parent.parent))
+        self.assertEqual(nested, (f"cadgen/{here.name}:{part_line}",) * 2 + (f"cadgen/{here.name}:{hole_line}",))
+        for root in (None, Path(self._tmp.name)):
+            with self.subTest(root=root):
+                self.assertEqual(
+                    script_fields(project_texts(board, name="amp", script_root=root)),
+                    (f"{here.name}:{part_line}",) * 2 + (f"{here.name}:{hole_line}",),
+                )
+
+    def test_the_script_field_is_cadgens(self) -> None:
+        from cadgen.kicad.design import DesignError
+
+        with self.assertRaisesRegex(DesignError, "cannot set Script"):
+            self.board().part("Test:R", footprint="Test:R_0603", properties={"Script": "elsewhere.py:1"})
 
     def test_the_project_carries_the_rules_and_net_classes(self) -> None:
         board = self.board()

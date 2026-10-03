@@ -25,12 +25,19 @@ Nothing here talks to KiCad. Library lookups happen when a part is created
 (the files read are the build's inputs); everything KiCad itself decides --
 filled zones, clearances, connectivity -- happens when the build writes the
 board and runs ``kicad-cli`` over it.
+
+Each part and hole remembers the script line that made it (``part.script``):
+the documents carry it as a hidden ``Script`` field, so a part a person points
+at in the viewer leads back to that line.
 """
 
 from __future__ import annotations
 
+import functools
 import math
+import os
 import re
+import sys
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Iterable, Sequence
@@ -51,6 +58,48 @@ __all__ = [
 
 #: The fields every KiCad symbol has; the rest are a library's or a part's own.
 STANDARD_FIELDS = ("Reference", "Value", "Footprint", "Datasheet", "Description")
+#: The hidden field a board's documents carry on each part: the script line that made it.
+SCRIPT_FIELD = "Script"
+
+_CADGEN = os.path.normcase(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))) + os.sep
+
+
+@functools.lru_cache(maxsize=256)
+def _in_cadgen(filename: str) -> bool:
+    return os.path.normcase(os.path.abspath(filename)).startswith(_CADGEN)
+
+
+def _script_line() -> tuple[str, int] | None:
+    """The first frame outside cadgen, as (absolute file, line): the script line that called it."""
+    frame = sys._getframe(1)
+    while frame is not None:
+        filename = frame.f_code.co_filename
+        if filename.startswith("<"):
+            return filename, frame.f_lineno
+        if not _in_cadgen(filename):
+            return os.path.abspath(filename), frame.f_lineno
+        frame = frame.f_back
+    return None
+
+
+def script_reference(script: tuple[str, int] | None, root: str | os.PathLike | None) -> str | None:
+    """A script line as the ``Script`` field spells it, ``<path>:<line>``.
+
+    The path is relative to ``root`` (the model script's folder), with ``/``
+    between folders, so the same script writes the same documents wherever its
+    project lives; a file outside that folder, or any file when no folder is
+    known, is named by its file name alone.
+    """
+    if script is None:
+        return None
+    filename, line = script
+    name = os.path.basename(filename) or filename
+    if root is not None and not filename.startswith("<"):
+        try:
+            name = Path(filename).resolve().relative_to(Path(root).resolve()).as_posix()
+        except (OSError, ValueError):
+            pass
+    return f"{name}:{line}"
 
 
 class DesignError(ValueError):
@@ -206,6 +255,7 @@ class Part:
         value: str,
         properties: dict[str, str],
         dnp: bool,
+        script: tuple[str, int] | None = None,
     ):
         self._board = board
         self._index = index
@@ -215,6 +265,8 @@ class Part:
         self.value = value
         self.properties = dict(properties)
         self.dnp = dnp
+        #: Where the script made this part: (absolute file, line), the first frame outside cadgen.
+        self.script = script
         self._placement: _Placement | None = None
         seen: dict[str, Pin] = {}
         for library_pin in symbol.pins:
@@ -254,6 +306,15 @@ class Part:
             if key not in STANDARD_FIELDS and not key.startswith("ki_")
         }
         return {**carried, **self.properties}
+
+    def document_fields(self, script_root: str | os.PathLike | None = None) -> dict[str, str]:
+        """:attr:`fields`, and the hidden ``Script`` field: what the part's symbol and its
+        footprint both carry in the written documents."""
+        script = script_reference(self.script, script_root)
+        fields = dict(self.fields)
+        if script is not None:
+            fields[SCRIPT_FIELD] = script
+        return fields
 
     @property
     def placed(self) -> bool:
@@ -365,6 +426,7 @@ class Zone:
 class Hole:
     at: tuple[float, float]
     diameter: float
+    script: tuple[str, int] | None = None  # the line that made it, as Part.script
 
 
 @dataclass(frozen=True)
@@ -553,6 +615,8 @@ class Circuit:
             key = str(key)
             if key in {"Reference", "Value", "Footprint"}:
                 raise DesignError(f"properties= cannot set {key}; pass it as {key.lower()}=")
+            if key == SCRIPT_FIELD:
+                raise DesignError(f"properties= cannot set {SCRIPT_FIELD}: cadgen writes there the script line that made the part")
             extra[key] = str(item)
         part = Part(
             self,
@@ -563,6 +627,7 @@ class Circuit:
             value=str(value) if value is not None else library_symbol.properties.get("Value", library_symbol.name),
             properties=extra,
             dnp=bool(dnp),
+            script=_script_line(),
         )
         self._check_pads(part)
         self._parts.append(part)
@@ -997,7 +1062,13 @@ class Board(Circuit):
 
     def hole(self, *, at: Any, diameter: float) -> None:
         """An unplated hole (a mounting hole with no copper)."""
-        self.holes.append(Hole(at=_point(at, what="hole at"), diameter=_positive(diameter, what="hole diameter", allow_none=False)))
+        self.holes.append(
+            Hole(
+                at=_point(at, what="hole at"),
+                diameter=_positive(diameter, what="hole diameter", allow_none=False),
+                script=_script_line(),
+            )
+        )
 
     def text(
         self,

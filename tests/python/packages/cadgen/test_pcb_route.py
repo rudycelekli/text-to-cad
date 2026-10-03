@@ -399,7 +399,7 @@ class PcbRouteTest(unittest.TestCase):
         self.assertEqual(sexpr.value(new_segment, "net"), "VIN")
         self.assertEqual(sexpr.find(new_via, "layers")[1:], ["F.Cu", "B.Cu"])
         self.assertIsNot(routed, texts.pcb_tree)
-        self.assertNotIn("route", str(texts.pcb_tree))
+        self.assertNotIn(ids.of("route:0"), str(texts.pcb_tree))  # the board routed is a copy
 
     def test_the_frame_round_trips_kicads_nanometres(self) -> None:
         frame = DsnFrame(148.5, 105.0)

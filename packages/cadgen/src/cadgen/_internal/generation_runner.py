@@ -408,7 +408,7 @@ def _write_pcb_project(
         raise TypeError(f"{label} @pcb must return a pcb.Board, got {type(result).__name__}")
     output_path = Path(output_path)
     resolve_progress(progress).phase(PHASE_CHECK_BOARD)
-    built = build_board(result, name=output_path.stem)
+    built = build_board(result, name=output_path.stem, script_root=Path(script_path).resolve().parent)
     errors = built.errors
     if errors:
         # Only the errors: warnings and the unrouted list come back once these are fixed.
