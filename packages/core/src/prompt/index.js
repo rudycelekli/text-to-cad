@@ -1,4 +1,5 @@
 import { buildCadRefToken, parseCadRefSelector } from '../lib/cadRefs.js';
+import { buildBoardRefToken, isBoardRefPath, parseBoardRefSelector } from '../lib/boardRefs.js';
 
 let operationSequence = 0;
 const operationNamespace = globalThis.crypto?.randomUUID?.() ?? Math.random().toString(36).slice(2);
@@ -24,8 +25,12 @@ export function validatePromptReference(reference) {
     requireValue(target.end.line > target.start.line || (target.end.line === target.start.line && target.end.character >= target.start.character), 'range end precedes its start');
   } else if (target.kind === 'cad-selector') {
     requireValue(resource.kind === 'workspace-file', 'CAD selectors require a workspace file');
+    // A KiCad document's selectors are board references (#U3, #U3.9, #net:VIN, #@x1y2); a model's, STEP's.
+    const board = isBoardRefPath(resource.path);
     requireValue(Array.isArray(target.selectors) && target.selectors.length > 0 && target.selectors.every(selector => {
-      const parsed = typeof selector === 'string' && selector === selector.trim() ? parseCadRefSelector(selector) : null;
+      if (typeof selector !== 'string' || selector !== selector.trim()) return false;
+      if (board) return Boolean(parseBoardRefSelector(selector));
+      const parsed = parseCadRefSelector(selector);
       return parsed && parsed.selectorType !== 'opaque';
     }), 'invalid CAD selector');
   } else requireValue(target.kind === 'whole-resource', 'unknown reference target');
@@ -94,7 +99,10 @@ export function formatPromptReference(reference, { resolvePath } = {}) {
   validatePromptReference(reference);
   const path = resolvePath ? resolvePath(reference.resource) : reference.resource.kind === 'url' ? reference.resource.url : reference.resource.path;
   requireValue(typeof path === 'string' && path.length > 0, 'reference could not be mapped to a destination');
-  if (reference.target.kind === 'cad-selector') return buildCadRefToken({ cadPath: path, selectors: [...reference.target.selectors] });
+  if (reference.target.kind === 'cad-selector') {
+    const selectors = [...reference.target.selectors];
+    return isBoardRefPath(reference.resource.path) ? buildBoardRefToken({ path, selectors }) : buildCadRefToken({ cadPath: path, selectors });
+  }
   const quoted = /[\s#"\\]/.test(path) ? JSON.stringify(path) : path;
   if (reference.target.kind === 'text-range') {
     const { start, end } = reference.target;
