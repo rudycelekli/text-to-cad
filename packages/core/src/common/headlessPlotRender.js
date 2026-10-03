@@ -1,13 +1,13 @@
 /**
- * `cadgen pcb snapshot` in the page: a `GET /__cad/plot` payload — the SVG sheets a KiCad
- * board or schematic's own tool plots — fitted on a 2D canvas, as a PNG.
+ * `cadgen pcb snapshot` in the page: a `GET /__cad/plot` payload — the SVGs a KiCad board's or
+ * schematic's own tool plots — fitted on a 2D canvas, as a PNG.
  *
  * This is the CLI half of the viewer's plot pane, and shares its whole drawing path
  * (`../lib/plot2d`): the same layout of the sheets, the same fit (drawing2d's), the same frame
- * (`drawPlot`: each sheet on its own background, its SVG over it), on the same theme surround.
- * The pane keeps rasters of the SVGs so a pan costs nothing; this draws the SVGs themselves,
- * once, which is what those rasters are made of. So a CLI render cannot show what the pane
- * cannot.
+ * (`drawPlot`: each sheet on its own background, its SVG over it — a board's every layer, back
+ * to front, poured, seen from the top), on the same theme surround. The pane keeps rasters of
+ * the SVGs so a pan costs nothing; this draws the SVGs themselves, once, which is what those
+ * rasters are made of. So a CLI render cannot show what the pane cannot.
  *
  * The payload arrives over the snapshot host's loopback asset server rather than inside the
  * job, as a drawing's does: cadgen plots it with `kicad-cli`, caches it in the store and writes

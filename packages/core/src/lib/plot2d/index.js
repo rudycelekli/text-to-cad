@@ -4,11 +4,14 @@
  * 2D out, the view maths drawing2d's.
  */
 export {
+  PLOT_LAYER_SIDES,
   PLOT_SCHEMA_VERSION,
   PLOT_SHEET_GAP,
   drawPlot,
   fitPlotTransform,
+  layerImages,
   layoutPlot,
+  mirrorPageX,
   pageToScreen,
   rectsOverlap,
   screenToPage,

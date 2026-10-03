@@ -2,7 +2,7 @@
  * A plot's sheets as images the browser can draw: each SVG, decoded once.
  *
  * The browser is the SVG renderer — the same one in the viewer and in the snapshot bundle —
- * so a sheet becomes an `HTMLImageElement` over a `blob:` URL and is drawn with `drawImage`,
+ * so an SVG becomes an `HTMLImageElement` over a `blob:` URL and is drawn with `drawImage`,
  * which rasterises the vector at whatever scale it lands at. As an image, an SVG runs no
  * script and loads nothing beside itself. The URL is revoked once the image has decoded: a
  * decoded image keeps its picture.
@@ -16,14 +16,17 @@ function abortError() {
 }
 
 /**
- * Decode every sheet's SVG.
+ * Decode every sheet's SVG, and every layer's of a board sheet: its picture and, where it has
+ * one, its picture without pours.
  *
- * Throws — naming the sheet — on an SVG this browser cannot draw: a picture with a sheet
- * missing is worse than a picture that refuses to open.
+ * Throws — naming the sheet and the layer — on an SVG this browser cannot draw: a picture with
+ * a sheet or a layer missing is worse than a picture that refuses to open.
  *
  * @param {import("./plot.js").PlotLayout} layout
  * @param {{ signal?: AbortSignal, Image?: any, URL?: any, Blob?: any }} [options]
- * @returns {Promise<HTMLImageElement[]>} One per sheet, in payload order.
+ * @returns {Promise<(HTMLImageElement|import("./plot.js").PlotLayerImages[])[]>} One per sheet, in
+ *   payload order: a schematic or harness sheet's image, or a board sheet's layers'
+ *   `{ id, poured, unpoured }`, back to front.
  */
 export async function loadSheetImages(layout, {
   signal,
@@ -35,8 +38,8 @@ export async function loadSheetImages(layout, {
     throw new Error("Drawing a plot needs a browser: this runtime has no Image, Blob or URL.createObjectURL.");
   }
   signal?.throwIfAborted?.();
-  return Promise.all(layout.sheets.map(async (sheet) => {
-    const url = Urls.createObjectURL(new BlobCtor([sheet.svg], { type: "image/svg+xml" }));
+  const decode = async (svg, sheet, layer) => {
+    const url = Urls.createObjectURL(new BlobCtor([svg], { type: "image/svg+xml" }));
     const image = new ImageCtor();
     image.decoding = "async";
     image.src = url;
@@ -45,8 +48,9 @@ export async function loadSheetImages(layout, {
     } catch (error) {
       if (signal?.aborted) throw abortError();
       const reason = error instanceof Error && error.message ? ` (${error.message})` : "";
+      const which = layer ? `Layer ${layer} of sheet` : "Sheet";
       throw new Error(
-        `Sheet ${sheet.index + 1} of this plot${sheet.name ? `, “${sheet.name}”,` : ""} is not an SVG this `
+        `${which} ${sheet.index + 1} of this plot${sheet.name ? `, “${sheet.name}”,` : ""} is not an SVG this `
         + `browser can draw${reason}.`
       );
     } finally {
@@ -54,5 +58,15 @@ export async function loadSheetImages(layout, {
     }
     if (signal?.aborted) throw abortError();
     return image;
+  };
+  return Promise.all(layout.sheets.map((sheet) => {
+    if (!sheet.layers) return decode(sheet.svg, sheet, null);
+    return Promise.all(sheet.layers.map(async (layer) => {
+      const [poured, unpoured] = await Promise.all([
+        decode(layer.svg, sheet, layer.id),
+        layer.unpoured ? decode(layer.unpoured, sheet, `${layer.id} (unpoured)`) : null
+      ]);
+      return { id: layer.id, poured, unpoured };
+    }));
   }));
 }

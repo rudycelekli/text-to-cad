@@ -3,10 +3,13 @@ import test from "node:test";
 
 import { zoomLimits, zoomTransform } from "../drawing2d/transform.js";
 import {
+  PLOT_SCHEMA_VERSION,
   PLOT_SHEET_GAP,
   drawPlot,
   fitPlotTransform,
+  layerImages,
   layoutPlot,
+  mirrorPageX,
   pageToScreen,
   screenToPage,
   sheetImages,
@@ -15,8 +18,17 @@ import {
 import { loadSheetImages } from "./images.js";
 
 const sheet = (name, width, height, background = "#F5F4EF") => ({ name, svg: "<svg/>", width, height, background });
-const BOARD = { schemaVersion: 1, kicadVersion: "10.0.6", kind: "board", unrouted: 2, sheets: [sheet("blinky", 40, 30, "#001023")] };
-const SCHEMATIC = { schemaVersion: 1, kind: "schematic", unrouted: null, sheets: [sheet("root", 297, 210), sheet("small", 210, 148), sheet("power", 297, 210)] };
+const layer = (id, kind, side, unpoured) => ({ id, kind, side, svg: `<svg id="${id}"/>`, ...(unpoured ? { unpoured: `<svg id="${id}-bare"/>` } : {}) });
+const LAYERS = [
+  layer("B.Fab", "fab", "back"), layer("B.Cu", "copper", "back", true), layer("F.Cu", "copper", "front"),
+  layer("F.SilkS", "silk", "front"), layer("Edge.Cuts", "outline", "both"), layer("drills", "drill", "both")
+];
+const INDEX = { origin: [20, 15], parts: [], pads: [], findings: [] };
+const BOARD = {
+  schemaVersion: 2, kicadVersion: "10.0.6", kind: "board", unrouted: 2,
+  sheets: [{ name: "blinky", width: 40, height: 30, background: "#001023", layers: LAYERS }], board: INDEX
+};
+const SCHEMATIC = { schemaVersion: 2, kind: "schematic", unrouted: null, sheets: [sheet("root", 297, 210), sheet("small", 210, 148), sheet("power", 297, 210)] };
 
 test("a schematic's sheets stack top to bottom, root first, each centred on the widest", () => {
   const layout = layoutPlot(SCHEMATIC);
@@ -34,12 +46,20 @@ test("a schematic's sheets stack top to bottom, root first, each centred on the 
   assert.equal(layout.unrouted, null);
 });
 
-test("a board is one sheet, and nothing in the layout depends on the tool's version", () => {
+test("a board is one sheet of layers, its index beside it, and nothing depends on the tool's version", () => {
   const { kicadVersion: _version, ...withoutVersion } = BOARD;
   const layout = layoutPlot(withoutVersion);
+  assert.equal(PLOT_SCHEMA_VERSION, 2);
   assert.deepEqual(layout.bounds, [0, 0, 40, 30]);
-  assert.deepEqual(layout.sheets.map(({ x, y, background }) => [x, y, background]), [[0, 0, "#001023"]]);
+  assert.deepEqual(layout.sheets.map(({ x, y, background, svg }) => [x, y, background, svg]), [[0, 0, "#001023", null]]);
+  assert.deepEqual(layout.sheets[0].layers.map(({ id, kind, side, unpoured }) => [id, kind, side, unpoured]), [
+    ["B.Fab", "fab", "back", null], ["B.Cu", "copper", "back", '<svg id="B.Cu-bare"/>'], ["F.Cu", "copper", "front", null],
+    ["F.SilkS", "silk", "front", null], ["Edge.Cuts", "outline", "both", null], ["drills", "drill", "both", null]
+  ]);
+  assert.equal(layout.board, INDEX);
   assert.equal(layout.unrouted, 2);
+  assert.equal(layoutPlot(SCHEMATIC).board, null);
+  assert.equal(layoutPlot(SCHEMATIC).sheets[0].layers, null);
 });
 
 test("the fit frames the page the right way up: its top-left corner is the picture's", () => {
@@ -70,9 +90,12 @@ test("screenToPage inverts pageToScreen, under a zoom about a point too", () => 
 
 test("a payload this build does not understand is refused by name", () => {
   assert.throws(() => layoutPlot(null), /plot payload object/);
-  assert.throws(() => layoutPlot({ ...BOARD, schemaVersion: 2 }), /schemaVersion 2.*Update cadgen and the app together/);
+  assert.throws(() => layoutPlot({ ...BOARD, schemaVersion: 1 }), /schemaVersion 1.*Update cadgen and the app together/);
   assert.throws(() => layoutPlot({ ...BOARD, sheets: [] }), /non-empty array/);
-  assert.throws(() => layoutPlot({ ...BOARD, sheets: [{ ...BOARD.sheets[0], svg: "" }] }), /"blinky".*no SVG/);
+  assert.throws(() => layoutPlot({ ...BOARD, sheets: [{ ...BOARD.sheets[0], layers: [] }] }), /"blinky".*no SVG and no layers/);
+  assert.throws(() => layoutPlot({ ...SCHEMATIC, sheets: [{ ...SCHEMATIC.sheets[0], svg: "" }] }), /"root".*no SVG and no layers/);
+  assert.throws(() => layoutPlot({ ...BOARD, sheets: [{ ...BOARD.sheets[0], layers: [{ ...LAYERS[0], svg: " " }] }] }), /layers\[0\] \(B\.Fab\) carries no SVG/);
+  assert.throws(() => layoutPlot({ ...BOARD, sheets: [{ ...BOARD.sheets[0], layers: [{ ...LAYERS[0], side: "top" }] }] }), /side "top"; a layer is front, back, both/);
   assert.throws(() => layoutPlot({ ...BOARD, sheets: [{ ...BOARD.sheets[0], width: 0 }] }), /positive width and height/);
   assert.throws(() => layoutPlot({ ...BOARD, sheets: [{ ...BOARD.sheets[0], background: "navy" }] }), /#rrggbb/);
 });
@@ -85,12 +108,18 @@ function recorder(width, height) {
     save() { calls.push(["save"]); },
     restore() { calls.push(["restore"]); },
     setTransform(...args) { calls.push(["setTransform", ...args]); },
+    translate(...args) { calls.push(["translate", ...args]); },
+    scale(...args) { calls.push(["scale", ...args]); },
     fillRect(...args) { calls.push(["fillRect", this.fillStyle, ...args]); },
     drawImage(image, ...args) { calls.push(["drawImage", image, ...args]); },
     fillStyle: ""
   };
   return { ctx, calls };
 }
+
+/** A board's decoded layers, as loadSheetImages hands them over: names for pictures. */
+const boardImages = () => [LAYERS.map(({ id, unpoured }) => ({ id, poured: id, unpoured: unpoured ? `${id} bare` : null }))];
+const drawnImages = (calls) => calls.filter(([name]) => name === "drawImage").map(([, image]) => image);
 
 test("a frame is each visible sheet in its background, then the images over them, in page space", () => {
   const layout = layoutPlot(SCHEMATIC);
@@ -115,6 +144,65 @@ test("the whole plot fitted draws every sheet, and an image without a sheet's pl
   assert.deepEqual(calls.filter(([name]) => name === "fillRect").length, 3);
   assert.deepEqual(calls.filter(([name]) => name === "drawImage").map(([, image]) => image), ["a", "b", "c"]);
   assert.throws(() => drawPlot(ctx, layout, { transform: { scale: 0, offsetX: 0, offsetY: 0 } }), /positive scale/);
+});
+
+test("a board draws every layer back to front, poured, seen from the top: KiCad's picture", () => {
+  const layout = layoutPlot(BOARD);
+  const placed = sheetImages(layout, boardImages());
+  assert.deepEqual(placed.map(({ layer, kind, sheet, x, y, width, height }) => [layer, kind, sheet, x, y, width, height]), LAYERS.map(({ id, kind }) => [id, kind, 0, 0, 0, 40, 30]));
+  const { ctx, calls } = recorder(400, 300);
+  drawPlot(ctx, layout, { transform: fitPlotTransform(layout, 400, 300), images: placed });
+  assert.deepEqual(drawnImages(calls), ["B.Fab", "B.Cu", "F.Cu", "F.SilkS", "Edge.Cuts", "drills"]);
+  assert.deepEqual(calls.filter(([name]) => name === "fillRect"), [["fillRect", "#001023", 0, 0, 40, 30]]);
+  assert.ok(!calls.some(([name]) => name === "scale"), "nothing is mirrored from the top");
+});
+
+test("a view draws the layers it names, the copper without its pours, or the board from below", () => {
+  const layout = layoutPlot(BOARD);
+  const placed = sheetImages(layout, boardImages());
+  const draw = (view) => {
+    const { ctx, calls } = recorder(400, 300);
+    drawPlot(ctx, layout, { transform: { scale: 10, offsetX: 0, offsetY: 0 }, images: placed, view });
+    return calls;
+  };
+  assert.deepEqual(drawnImages(draw({ layers: ["F.Cu", "B.Cu", "drills"] })), ["B.Cu", "F.Cu", "drills"]);
+  assert.deepEqual(drawnImages(draw({ poured: false })), ["B.Fab", "B.Cu bare", "F.Cu", "F.SilkS", "Edge.Cuts", "drills"]);
+  // From below the stack reverses, what goes through the board stays on top, and every layer is
+  // mirrored about the sheet's vertical centre line: x -> 2 * sheet.x + width - x.
+  const below = draw({ side: "bottom" });
+  assert.deepEqual(drawnImages(below), ["F.SilkS", "F.Cu", "B.Cu", "B.Fab", "Edge.Cuts", "drills"]);
+  const first = below.findIndex(([name]) => name === "drawImage");
+  assert.deepEqual(below.slice(first - 3, first + 2), [["save"], ["translate", 40, 0], ["scale", -1, 1], ["drawImage", "F.SilkS", 0, 0, 40, 30], ["restore"]]);
+  assert.equal(mirrorPageX(layout, 0, 12.5), 27.5);
+  assert.equal(mirrorPageX(layout, 0, mirrorPageX(layout, 0, 3)), 3);
+  // A raster of a view (no layer) is drawn as it is, mirrored or not.
+  const { ctx, calls } = recorder(400, 300);
+  drawPlot(ctx, layout, { transform: { scale: 10, offsetX: 0, offsetY: 0 }, images: [{ image: "patch", x: 0, y: 0, width: 40, height: 30 }], view: { side: "bottom" } });
+  assert.deepEqual(drawnImages(calls), ["patch"]);
+  assert.ok(!calls.some(([name]) => name === "scale"));
+});
+
+test("layer images name each sheet's pictures by layer, a schematic sheet as one", () => {
+  assert.deepEqual(layerImages(layoutPlot(BOARD), boardImages())[0].map(({ id, side, poured, unpoured }) => [id, side, poured, unpoured]), [
+    ["B.Fab", "back", "B.Fab", null], ["B.Cu", "back", "B.Cu", "B.Cu bare"], ["F.Cu", "front", "F.Cu", null],
+    ["F.SilkS", "front", "F.SilkS", null], ["Edge.Cuts", "both", "Edge.Cuts", null], ["drills", "both", "drills", null]
+  ]);
+  assert.deepEqual(layerImages(layoutPlot(SCHEMATIC), ["a", "b", "c"]).map((layers) => layers.map(({ id, kind, poured }) => [id, kind, poured])), [
+    [[null, "sheet", "a"]], [[null, "sheet", "b"]], [[null, "sheet", "c"]]
+  ]);
+});
+
+test("a board's layers decode with their unpoured pictures, and one that will not decode is named", async () => {
+  const layout = layoutPlot(BOARD);
+  const URL = { createObjectURL: (blob) => `blob:${blob.parts[0]}`, revokeObjectURL: () => {} };
+  class Blob { constructor(parts, options) { this.parts = parts; this.type = options.type; } }
+  class Image { decode() { return Promise.resolve(); } }
+  const [layers] = await loadSheetImages(layout, { Image, URL, Blob });
+  assert.deepEqual(layers.map(({ id, poured, unpoured }) => [id, poured.src, unpoured?.src ?? null]), LAYERS.map(({ id, unpoured }) => [
+    id, `blob:<svg id="${id}"/>`, unpoured ? `blob:<svg id="${id}-bare"/>` : null
+  ]));
+  class BadImage { decode() { return this.src.includes("bare") ? Promise.reject(new Error("bad XML")) : Promise.resolve(); } }
+  await assert.rejects(loadSheetImages(layout, { Image: BadImage, URL, Blob }), /Layer B\.Cu \(unpoured\) of sheet 1 of this plot, “blinky”, is not an SVG this browser can draw \(bad XML\)/);
 });
 
 test("sheet images decode once each, their URLs are released, and a sheet that will not decode is named", async () => {

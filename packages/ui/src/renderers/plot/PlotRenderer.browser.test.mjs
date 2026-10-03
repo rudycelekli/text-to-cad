@@ -9,8 +9,9 @@ import { build } from 'esbuild';
 import { chromium } from 'playwright';
 import { PNG } from 'pngjs';
 
-// The plots under test are COMMITTED, hand-made payloads in KiCad's shape (see
-// `__fixtures__/README.md`), served as `GET /__cad/plot` serves them: no KiCad, no board.
+// The plots under test are COMMITTED payloads (see `__fixtures__/README.md`: KiCad's own plot of a
+// small board, hand-made sheets for the schematic and the harness), served as `GET /__cad/plot`
+// serves them: no KiCad, no board.
 const BOARD = JSON.parse(await readFile(new URL('./__fixtures__/board.plot.json', import.meta.url), 'utf8'));
 const SCHEMATIC = JSON.parse(await readFile(new URL('./__fixtures__/schematic.plot.json', import.meta.url), 'utf8'));
 const HARNESS = JSON.parse(await readFile(new URL('./__fixtures__/harness.plot.json', import.meta.url), 'utf8'));
@@ -70,9 +71,10 @@ async function open(t, file) {
 const canvasOf = pane => pane.locator('[data-plot-surface] canvas').first();
 const settle = page => page.evaluate(() => new Promise(resolve => requestAnimationFrame(() => requestAnimationFrame(resolve))));
 /**
- * The frame ON SCREEN once the pane says it is final — drawn at the scale it is shown at, not a
- * patch scaled while the view rests — and has come to rest (two screenshots alike); given the
- * frame from before a change, once it shows that change.
+ * The frame the pane painted once it says it is final — drawn at the scale it is shown at, not a
+ * patch scaled while the view rests — and has come to rest (two reads alike); given the frame
+ * from before a change, once it shows that change. Read from the canvas itself (device pixels
+ * are CSS pixels here): a board's tools and panels lie over it in the page, not in the picture.
  */
 async function frame(pane, before = null) {
   await canvasOf(pane).waitFor();
@@ -81,7 +83,7 @@ async function frame(pane, before = null) {
   for (let attempt = 0; attempt < 60; attempt += 1) {
     await settle(pane.page());
     await pane.locator('[data-plot-surface] [data-plot-settled="true"]').first().waitFor();
-    const shot = await canvasOf(pane).screenshot();
+    const shot = Buffer.from((await canvasOf(pane).evaluate((canvas) => canvas.toDataURL('image/png'))).split(',')[1], 'base64');
     if (last?.equals(shot) && !before?.shot.equals(shot)) return Object.assign(PNG.sync.read(shot), { shot });
     last = shot;
   }
@@ -141,9 +143,11 @@ test('a board opens fitted on its own background, its tracks drawn, and stays sh
   assert.ok(Math.abs(atFit - scale) <= 2, `1 mm of track is ${atFit} px at ${scale} px/mm`);
 
   // Zoomed in about the track, the view is drawn again at its own scale: four times as thick,
-  // and its edges as sharp as at the fit — not the fitted picture blown up.
+  // and its edges as sharp as at the fit — not the fitted picture blown up. The pointer then
+  // rests on bare board, so the track is not drawn hovered.
   const canvas = await canvasOf(pane).boundingBox();
   await wheelAt(page, canvas, { x: column, y: middle }, deltaForFactor(4));
+  await page.mouse.move(canvas.x + 8, canvas.y + 8);
   const zoomed = await frame(pane, fitted);
   const atZoom = run(zoomed, column, 0, zoomed.height - 1, red);
   assert.ok(Math.abs(atZoom - 4 * scale) <= 3, `four times as thick: ${atZoom} px for ${4 * scale}`);

@@ -9,7 +9,7 @@ import { PATCH_LIMIT, SETTLE_MS, createPlotRasters } from "./plotRasters.js";
 // turns by hand: the first frame is drawn at once, a pan is a whole-pixel move of what was
 // drawn, a zoom is redrawn at its own scale once the view rests, and the cache stays bounded.
 
-const PAYLOAD = { schemaVersion: 1, kind: "schematic", unrouted: null, sheets: [
+const PAYLOAD = { schemaVersion: 2, kind: "schematic", unrouted: null, sheets: [
   { name: "root", svg: "<svg/>", width: 297, height: 210, background: "#F5F4EF" },
   { name: "power", svg: "<svg/>", width: 297, height: 210, background: "#F5F4EF" }
 ] };
