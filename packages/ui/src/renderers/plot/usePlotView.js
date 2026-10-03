@@ -26,35 +26,47 @@ import { createPlotRasters } from "./plotRasters.js";
  * @param {"light"|"dark"} options.colorScheme
  * @param {(transform: object|null) => void} options.onViewMoved  The view to remember, or null for the fit.
  * @param {string} options.noun  What the plot is called ("board", "schematic").
+ * @param {(ctx: CanvasRenderingContext2D, frame: object) => void} [options.overlay]  Drawn over the
+ *   plot in the same frame, at the frame's view: what a person points at on a board or schematic.
+ * @param {object} [options.picking]  The plane view's pointing (`usePlaneView`): taps, hover, double-tap.
+ * @param {{ layers: string[]|null, poured: boolean, side: "top"|"bottom" }|null} [options.drawView]  A
+ *   board's Display, as `drawPlot`'s `view`; a new one draws the plot afresh.
  */
-export function usePlotView({ plot, restored = null, colorScheme = "light", onViewMoved, noun }) {
+export function usePlotView({ plot, restored = null, colorScheme = "light", onViewMoved, noun, overlay = null, picking = null, drawView = null }) {
   const plotRef = useRef(plot);
   plotRef.current = plot;
   const rastersRef = useRef(null);
+  // A board's Display (side, layers, pours): a new one is a new raster cache.
+  const drawViewRef = useRef(drawView);
+  drawViewRef.current = drawView;
+  const drawViewKey = JSON.stringify(drawView);
+  const overlayRef = useRef(overlay);
+  overlayRef.current = overlay;
   const paint = useCallback((ctx, frame) => {
     const { width, height, pixelRatio, transform, element, colorScheme: scheme } = frame;
     clearSurface(ctx, { width, height, pixelRatio, background: readThemeColors(element, scheme).background });
     const rasters = rastersRef.current;
     if (!rasters || !transform) return;
     const final = rasters.paint(ctx, { transform, width, height, pixelRatio });
+    overlayRef.current?.(ctx, frame);
     if (element) element.dataset.plotSettled = final ? "true" : "false";
   }, []);
   const view = usePlaneView({
-    content: plot, bounds: plot?.layout.modelBounds ?? null, restored, colorScheme, onViewMoved, paint, noun
+    content: plot, bounds: plot?.layout.modelBounds ?? null, restored, colorScheme, onViewMoved, paint, noun, picking
   });
   const { containerRef, paintNow, requestPaint, schemeRef } = view;
 
   // One raster cache per plot: a new revision starts afresh, and the old one's canvases go with it.
   useEffect(() => {
     if (!plot) return undefined;
-    const rasters = createPlotRasters({ layout: plot.layout, images: plot.images, onChange: requestPaint });
+    const rasters = createPlotRasters({ layout: plot.layout, images: plot.images, onChange: requestPaint, view: drawViewRef.current });
     rastersRef.current = rasters;
     requestPaint();
     return () => {
       if (rastersRef.current === rasters) rastersRef.current = null;
       rasters.dispose();
     };
-  }, [plot, requestPaint]);
+  }, [plot, requestPaint, drawViewKey]);
 
   /** The framed view as a PNG, drawn at its own scale first: a capture never waits on a rest. */
   const capture = useCallback(() => {
@@ -90,6 +102,6 @@ export function usePlotView({ plot, restored = null, colorScheme = "light", onVi
 
   return {
     containerRef, canvasRef: view.canvasRef, dragging: view.dragging, fit: view.fit, capture, thumbnail,
-    transformRef: view.transformRef
+    transformRef: view.transformRef, requestPaint, paintNow, zoomBy: view.zoomBy, setView: view.setView
   };
 }

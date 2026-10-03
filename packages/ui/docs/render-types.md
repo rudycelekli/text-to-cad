@@ -44,7 +44,7 @@ format. Pure data: no behaviour, no imports beyond the format enum.
 |---|---|
 | `assetKind` | Which asset a format LOADS: `mesh`, `drawing`, `robot`. |
 | `iconKind` | The file-list glyph. |
-| `tools` | `select`, `pan`, `draw`, `orbit`, `screenshot`. Orbit and screenshot are true for every format WITH a viewport — they act on the viewport, not the geometry. `dxf`, `kicad_pcb`, `kicad_sch` and `harness` claim none of them: their pane is a canvas with no toolbar over it. |
+| `tools` | `select`, `pan`, `draw`, `orbit`, `screenshot`. Orbit and screenshot are true for every format WITH a viewport — they act on the viewport, not the geometry. `dxf`, `kicad_pcb`, `kicad_sch` and `harness` claim none of them here: their pane is a canvas, and a board's own tools (Select, Draw, Measure) and a schematic's (Select) belong to the plot renderer (`renderers/plot/board`), which consults no table. |
 | `parts` | Per-part selection, hiding, isolate, assembly tree. |
 | `topology` | Face/edge/vertex references. Implies `parts`. |
 | `exploded`, `displayModes`, `clip` | STEP-tier display transforms. |

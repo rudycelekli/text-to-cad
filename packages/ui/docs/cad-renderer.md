@@ -352,10 +352,27 @@ the viewer was inventing from the file; a drawing is not that.
 `createPlotRenderer` (`@text-to-cad/ui/renderers/plot`, id `plot`) shows a document as the
 picture its own tool draws of it: a KiCad board (`.kicad_pcb`) or schematic (`.kicad_sch`)
 as KiCad plots it, and a wiring harness (`<name>.harness.yml`; a plain `.yml` is no CAD
-file) as WireViz draws it. It is a straight render, as a DXF is: not on the shell, no
-three.js, no viewport, no panel, no Display settings, no layer toggles, no tools, no
-toolbar, no preview. A board's 3D is the STEP or GLB its model exports, which are files of
-their own.
+file) as WireViz draws it. It is not on the 3D shell: no three.js, no viewport, no preview. A
+harness is a straight render, as a DXF is: no panel, no Display settings, no tools. A board whose
+payload carries its index (`board`) has the tools a person points with — Select, Draw and
+Measure, its tree, Reference, Quick Edit and its Display settings
+([the design system](settings-ui.md#a-kicad-board)) — and a schematic whose payload carries its
+own (`schematic`) has Select with the same tree, Reference and Quick Edit
+([its section](settings-ui.md#a-kicad-schematic)), all drawn from the kit's shared pieces
+(`kit/shell/ToolColumn.jsx`, `kit/tools/*`, Quick Edit) over the canvas. A board's 3D is the
+STEP or GLB its model exports, which are files of their own.
+
+- **A board's or a schematic's index** (`@text-to-cad/core/lib/board2d`):
+  `createBoardIndex(payload.board)` and `createSchematicIndex(payload.schematic, layout.sheets)`
+  pick what is under a page point by Select's mode (on a board, by the side looked at too),
+  resolve a reference back to what it names, and on a board find what Measure snaps to;
+  `drawBoardOverlay` draws the hover, the selection, a measurement and a check's markers over
+  the plot, in the frame's own paint, so a capture shows them. Pure: the viewer runs it on every
+  pointer move.
+- **Host commands**: on a board or a schematic with its index, `select` takes board references
+  (`#U3`, `#U3.9`, `#net:VIN`; points only on a board) and refuses one the document lacks;
+  `clearSelection` clears; `readState().selection` is the selection in the prompt grammar; a
+  host's `selectReference` selects. A harness still declines them, in words.
 
 - **The picture is KiCad's.** `client.plotPayload(file)` is one `GET /__cad/plot`
   (`apps/web/docs/backend.md`): `kicad-cli` plots the document to SVG on the server — a
@@ -387,9 +404,12 @@ their own.
   it and nothing else, since every sheet keeps its own background.
 - **Host commands, state, navbar** are the DXF pane's: `resetCamera` fits, `capture` is the
   canvas as a PNG, `thumbnail` draws the SVGs fitted on a canvas of its own, `readState`
-  reports `camera: null` and an empty `display`; `select`, `clearSelection`, `setCamera`,
-  `setDisplaySettings` and `setRenderMode` are declined in words; the view is the file view's
-  camera once moved; the navbar has the file tree's toggle and nothing of the plot's.
+  reports `camera: null` and an empty `display`; `setCamera`, `setDisplaySettings` and
+  `setRenderMode` are declined in words (a board drawn layer by layer says its Display settings
+  are the person's, in the view); `select` and `clearSelection` are answered on a board or a
+  schematic with its index and declined otherwise; the view is the file view's camera once
+  moved (and a board's Display, its one renderer slice); the navbar has the file tree's toggle,
+  and a board drawn layer by layer its Display menu.
 - **Failures.** A non-200 is the ordinary actionable card with the SERVER's sentence — a
   machine without KiCad (or WireViz and Graphviz) is told how to install it, an unreadable
   document why; a payload from a cadgen that disagrees about `schemaVersion` gets the version
@@ -1340,8 +1360,9 @@ effects pass reports whether a style, visibility or highlight changed
 ### Draw
 
 Draw is the shared [drawing editor](drawing.md) (Excalidraw) laid transparently
-over the viewport. It is a STEP tool and appears on no other format: a GLB, an
-STL, a 3MF, a DXF, a KiCad board or schematic, a wiring harness and a robot description do not offer it. (The tool itself is
+over the viewport. It is a STEP tool, and a KiCad board's (over its flat picture, which
+follows the editor's pan and zoom: `plot/board/boardViewLock.js`); a GLB, an STL, a 3MF, a
+DXF, a KiCad schematic, a wiring harness and a robot description do not offer it. (The tool itself is
 the SHELL's — `kit/tools/draw`, `shell.tools.draw` — and STEP is the renderer that
 puts it on its strip; `renderers/shell-harness` also mounts it, for tests.) The
 chunk loads on the first use of the tool, and the

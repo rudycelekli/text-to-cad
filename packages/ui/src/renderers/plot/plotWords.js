@@ -56,6 +56,9 @@ function wordsFor({ noun, tool }) {
     noCamera: `${a} is a flat picture shown head on: it has no camera to pose. Zoom and pan it in the view, `
       + `or call resetCamera to fit the whole ${noun} again.`,
     noDisplay: `${a} has no Display settings: it is drawn in ${tool}’s own colours, on its own background, `
-      + "with no surfaces, lighting or render mode to configure."
+      + "with no surfaces, lighting or render mode to configure.",
+    /** A board drawn layer by layer: its Display settings are the person's, in the view. */
+    displayInView: `${a}’s Display settings (the side it is seen from, which layers are drawn, its copper pours) `
+      + "are set in the view’s Display menu, not by a host; it has no surfaces, lighting or render mode."
   });
 }

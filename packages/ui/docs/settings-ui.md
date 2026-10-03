@@ -101,7 +101,9 @@ none.
 | URDF / SRDF / SDF | Select, Position (posable joints only) |
 | GLB / STL / 3MF | none |
 | DXF | none: a 2D canvas |
-| KiCad board / schematic, wiring harness | none: a 2D canvas |
+| KiCad board | Select, Draw, Measure (see [A KiCad board](#a-kicad-board)) |
+| KiCad schematic | Select (see [A KiCad schematic](#a-kicad-schematic)) |
+| Wiring harness | none: a 2D canvas |
 
 There is no separator or activity dot. There is no Animate tool: routines play in
 [preview](#camera-animation-and-preview). Display is not a tool: every 3D
@@ -231,6 +233,68 @@ reappears with its panel without another press. Clip's slider, left to right,
 cuts deeper through the original bounding box; pose, animation and Explode never
 redefine the range. There is no Flip. With fewer than two parts Explode is not
 on the strip.
+
+## A KiCad board
+
+A board's tools are a STEP's, read for a flat picture (`renderers/plot/board`): Select, Draw
+and Measure on the strip, the board tree and the Reference in the stack, Quick Edit at the
+top-right, and the board's Display settings among the view's controls. None of them edits the
+board: the agent does, in its script. They come with the board's index (`payload.board`); a
+plot without one is the picture alone.
+
+- **Select**'s four modes are its mode menu in the tree's filter row, drawn as STEP's are:
+  **All** (the pointer: the most specific thing under it — a pad, a via or a track, then a
+  part; a press on bare board clears the selection, a pour included), **Parts** (a chip),
+  **Pads** (a pad) and **Nets** (two pads and a trace: any copper picks its whole net, pours
+  included, and the rest of the board steps back). Shift-click adds and removes. A
+  double-click on something copies its reference and leaves it selected; on bare board it fits
+  the view.
+- **The board tree** is Select's panel, closable as Features is: **Parts** by kind (ICs,
+  Connectors, Capacitors…), each with its pads; **Nets**, each with the pads on it (KiCad's
+  names for a pin on nothing are left out); **Checks**, what KiCad reported, when it reported
+  anything — choosing one selects what it names and rings its places. The filter finds a part
+  by its reference, value, footprint or MPN, a pad by its pin's name, a net by its name, and a
+  pasted reference exactly.
+- **The Reference** is headed by the pick as a person names it (`C14 · 100n`,
+  `U3 · pad 9 VBUS`, `net VIN`, `VIN · track`) and reads it back in the script's millimetres
+  (y up, from the board's drill/place origin): a part's footprint, side, position, rotation,
+  pads, MPN and LCSC fields and the script line that made it (`Script`); a pad's net, pin,
+  type and side; a net's class, pads, parts, tracks and their length, vias and pours; copper's
+  layer, width or drill. Its **Copy** (**Copy All**) writes the references with the file's
+  prefix, as the copy key does.
+- **References** are board references, the language `cadgen.pcb.read_board(path).resolve(ref)`
+  reads: `#U3`, `#U3.9`, `#net:VIN`, `#net:VIN@x40.1y21.6` (that net's copper at a point) and
+  `#@x40.1y21.6` (a point). Quick Edit carries them as it carries a STEP's.
+- **Measure** snaps as its mode menu says: **All**, **Pads** (pad centres), **Vias and
+  tracks** (via centres and track ends) and **Edges and holes**. Each measurement is a row:
+  its distance and what its two ends were, dx and dy on hover. It is kept, toggled and cleared
+  as a STEP's Measure is.
+- **Draw** is the shared drawing editor laid over the board, its Drawing panel and Copy Drawing
+  as a STEP's. While it is up the editor pans and zooms and the board follows it
+  (`board/boardViewLock.js`), so ink stays on what it was drawn over; the sketch goes with a
+  Quick Edit as the view with its ink.
+- **Display** (the navbar's Settings, one **Board** section): **View from** Top or Bottom (the
+  board mirrored, its bottom layers drawn over its top), **Layers** (All layers, Copper,
+  Silkscreen and fab) and **Copper pours** on or off — a pour hides the tracks under it. KiCad
+  drew every layer; this only chooses among them. Kept with the file's view.
+
+## A KiCad schematic
+
+A schematic has Select alone, with the board's tree, Reference, Quick Edit and copy key, over its
+index (`payload.schematic`). Its references are the board's, so one names one connection in both:
+`#U3` a symbol (every unit of it), `#U3.9` pin 9 (numbered as its pad is), `#net:VIN` a net
+(`cadgen.pcb.read_schematic(path).resolve(ref)` reads them). Where a symbol stands on a sheet is
+KiCad's layout, not the design, so a schematic has no Measure, no Draw and no positions in its
+Reference, and having no layers it has no Display settings.
+
+- **Select**'s modes: **All** (a pin, then a label, a wire or a junction for its net, then a
+  symbol), **Parts** (a symbol, by its body or its pins), **Pins** and **Nets** (anything on a
+  net). Shift-click adds; a double-click copies.
+- **The tree** is the board's, in pins: **Parts** by kind, each with its pins; **Nets**, each with
+  the pins on it. A symbol's units on several sheets are one row.
+- **The Reference**: a symbol's library entry, footprint, units, sheets (on a schematic of
+  several), pins, MPN and LCSC fields and `Script`; a pin's net, name and type; a net's class,
+  pins, parts and labels.
 
 ## The tool stack
 

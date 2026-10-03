@@ -46,12 +46,12 @@ function defaultCanvas(width, height) {
 
 /**
  * @param {{ layout: import("@text-to-cad/core/lib/plot2d/plot.js").PlotLayout,
- *   images: readonly CanvasImageSource[], onChange: () => void,
+ *   images: readonly CanvasImageSource[], onChange: () => void, view?: object|null,
  *   createCanvas?: (width: number, height: number) => HTMLCanvasElement,
  *   schedule?: typeof setTimeout, cancel?: typeof clearTimeout }} options
  *   `onChange`: a better picture is ready; paint again.
  */
-export function createPlotRasters({ layout, images, onChange, createCanvas = defaultCanvas,
+export function createPlotRasters({ layout, images, onChange, view = null, createCanvas = defaultCanvas,
   schedule = (callback, delay) => setTimeout(callback, delay), cancel = (handle) => clearTimeout(handle) }) {
   const svgs = sheetImages(layout, images);
   /** @type {{ canvas: HTMLCanvasElement, scale: number, rect: number[], used: number }[]} */
@@ -95,7 +95,9 @@ export function createPlotRasters({ layout, images, onChange, createCanvas = def
     const canvas = createCanvas(right - left, bottom - top);
     const context = canvas.getContext("2d");
     if (!context) throw new Error("This browser gave no 2D canvas context, so the plot cannot be drawn.");
-    drawPlot(context, layout, { transform: { scale, offsetX: originX - left, offsetY: originY - top }, images: svgs });
+    // The board's Display (`view`: its side, its layers, its pours) is drawn into the patch; a frame
+    // only places patches, so it never applies it twice.
+    drawPlot(context, layout, { transform: { scale, offsetX: originX - left, offsetY: originY - top }, images: svgs, ...(view ? { view } : {}) });
     patches.push({
       canvas, scale, used: (clock += 1),
       rect: [(left - originX) / scale, (top - originY) / scale, (right - originX) / scale, (bottom - originY) / scale]

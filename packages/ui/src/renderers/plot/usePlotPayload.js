@@ -28,7 +28,7 @@ class PlotSchemaError extends Error {
  * the error beside it.
  *
  * @param {{ client: import("@text-to-cad/core/client").CadWorkspaceService, file: string, revision?: string }} options
- * @returns {{ plot: { layout: object, images: HTMLImageElement[] }|null, error: unknown, loading: boolean, updating: boolean }}
+ * @returns {{ plot: { layout: object, images: HTMLImageElement[], board: object|null, schematic: object|null }|null, error: unknown, loading: boolean, updating: boolean }}
  */
 export function usePlotPayload({ client, file, revision = "" }) {
   const [state, setState] = useState(() => ({ key: "", file: "", plot: null, error: null, loading: true }));
@@ -48,7 +48,11 @@ export function usePlotPayload({ client, file, revision = "" }) {
           throw new PlotSchemaError(payload?.schemaVersion);
         }
         const layout = layoutPlot(payload);
-        return { layout, images: await loadSheetImages(layout, { signal: controller.signal }) };
+        // A board's or a schematic's index rides beside its picture: what its parts, pins and nets are, and where.
+        return {
+          layout, images: await loadSheetImages(layout, { signal: controller.signal }),
+          board: payload.board ?? null, schematic: payload.schematic ?? null
+        };
       })
       .then((plot) => { if (live) setState({ key, file, plot, error: null, loading: false }); })
       .catch((error) => {
