@@ -27,7 +27,7 @@ import math
 from dataclasses import dataclass
 
 from cadgen.kicad import sexpr
-from cadgen.kicad.design import Board, Part, _natural, kicad_net_name, unit_letter
+from cadgen.kicad.design import Board, Part, Pin, _natural, kicad_net_name, unit_letter
 from cadgen.kicad.ids import Ids
 from cadgen.kicad.outline import outline_bounds, outline_segments, polygon_rings
 from cadgen.kicad.sexpr import Sym
@@ -100,6 +100,18 @@ def unconnected_net_name(ref: str, pin_name: str, number: str, *, unit: str = ""
     if pin_name and pin_name not in {"~", number}:
         return kicad_net_name(f"unconnected-({ref}{unit}-{pin_name}-Pad{number})")
     return kicad_net_name(f"unconnected-({ref}-Pad{number})")
+
+
+def _open_net_name(part: Part, pin: Pin) -> str:
+    """The net of a pin on no net. Of a stack of such pins (one point in the schematic), KiCad
+    names the net after one: the least name, as it orders candidate drivers."""
+    names = []
+    for member in pin.stack:
+        unit = ""
+        if part.symbol.unit_count > 1:
+            unit = unit_letter(next((p.unit for p in part.symbol.pins if p.number == member.number), 1) or 1)
+        names.append(unconnected_net_name(part.ref, member.name, member.number, unit=unit))
+    return min(names)
 
 
 # --- layers ----------------------------------------------------------------------
@@ -317,10 +329,7 @@ def _place_footprint(
                 if net is not None:
                     net_name = kicad_net_name(net.name)
                 else:
-                    unit = ""
-                    if part.symbol.unit_count > 1:
-                        unit = unit_letter(next((p.unit for p in part.symbol.pins if p.number == pin.number), 1) or 1)
-                    net_name = unconnected_net_name(part.ref, pin.name, pin.number, unit=unit)
+                    net_name = _open_net_name(part, pin)
             # Net, then pin function and type, before the uuid, as KiCad orders them.
             item[:] = [entry for entry in item if not (isinstance(entry, list) and entry and entry[0] in {"net", "pinfunction", "pintype"})]
             uuid_index = next(i for i, entry in enumerate(item) if isinstance(entry, list) and entry and entry[0] == "uuid")

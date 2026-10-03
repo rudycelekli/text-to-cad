@@ -167,6 +167,12 @@ class Pin:
         return self.part._board._pin_nets.get(self.key)
 
     @property
+    def stack(self) -> tuple["Pin", ...]:
+        """This pin and every pin its symbol draws at the same point (a connector's repeated
+        GND pins): one connection point in the schematic, so one net, always."""
+        return tuple(self.part._pins[number] for number in self.part._stacks.get(self.number, (self.number,)))
+
+    @property
     def pads(self) -> list[tuple[float, float]]:
         """Board coordinates of every pad numbered like this pin (a tab can repeat one)."""
         return [self.part._pad_position(pad) for pad in self.part.footprint.pads_numbered(self.number)]
@@ -215,6 +221,14 @@ class Part:
             if library_pin.number not in seen:
                 seen[library_pin.number] = Pin(self, library_pin.number, library_pin.name, library_pin.electrical_type)
         self._pins = seen
+        # KiCad joins pins drawn at one point of a unit; so does the board.
+        points: dict[tuple[int, float, float], list[str]] = {}
+        for library_pin in symbol.pins:
+            if library_pin.body_style in (0, 1):
+                numbers = points.setdefault((library_pin.unit, round(library_pin.x, 4), round(library_pin.y, 4)), [])
+                if library_pin.number not in numbers:
+                    numbers.append(library_pin.number)
+        self._stacks = {number: tuple(numbers) for numbers in points.values() if len(numbers) > 1 for number in numbers}
 
     @property
     def footprint(self) -> Footprint:
@@ -592,7 +606,11 @@ class Circuit:
         return pin
 
     def connect(self, net: Net, *pins: Pin) -> None:
-        """Put ``pins`` on ``net``. A pin is on one net; joining it to a second is an error."""
+        """Put ``pins`` on ``net``. A pin is on one net; joining it to a second is an error.
+
+        Pins a symbol draws at one point (``pin.stack``: a connector's repeated GND
+        pins) are one connection in the schematic, so connecting one connects them all.
+        """
         if not isinstance(net, Net) or net._board is not self:
             raise DesignError("connect's first argument is a net from this board's board.net(...)")
         if not pins:
@@ -603,21 +621,25 @@ class Circuit:
             if existing is not None and existing is not net:
                 raise DesignError(
                     f"{pin!r} is already on net {existing.name}; one pin joins one net "
-                    f"(to join the two nets, connect both through the same net object)"
+                    f"(to join the two nets, connect both through the same net object){_stack_note(pin)}"
                 )
             if pin.key in self._no_connects:
-                raise DesignError(f"{pin!r} is marked no-connect")
-            if existing is None:
-                self._pin_nets[pin.key] = net
-                self._pin_order.append(pin)
+                raise DesignError(f"{pin!r} is marked no-connect{_stack_note(pin)}")
+            for member in pin.stack:
+                if member.key not in self._pin_nets:
+                    self._pin_nets[member.key] = net
+                    self._pin_order.append(member)
 
     def no_connect(self, *pins: Pin) -> None:
-        """Mark pins deliberately unconnected (KiCad's no-connect flag)."""
+        """Mark pins deliberately unconnected (KiCad's no-connect flag), each with its stack."""
         for pin in pins:
             pin = self._owned_pin(pin, what="no_connect")
             if pin.key in self._pin_nets:
-                raise DesignError(f"{pin!r} is on net {self._pin_nets[pin.key].name}, so it cannot be no-connect")
-            self._no_connects[pin.key] = pin
+                raise DesignError(
+                    f"{pin!r} is on net {self._pin_nets[pin.key].name}, so it cannot be no-connect{_stack_note(pin)}"
+                )
+            for member in pin.stack:
+                self._no_connects[member.key] = member
 
     def _anonymous_name(self, net: Net) -> str:
         pins = net.pins
@@ -1068,6 +1090,18 @@ class Board(Circuit):
 
 def _natural(text: str) -> tuple:
     return tuple(int(chunk) if chunk.isdigit() else chunk for chunk in re.split(r"(\d+)", str(text)))
+
+
+def _stack_note(pin: Pin) -> str:
+    """Why a pin the script never named is on a net: it is stacked with one that is."""
+    stack = pin.stack
+    if len(stack) == 1:
+        return ""
+    others = ", ".join(repr(member) for member in stack if member is not pin)
+    return (
+        f"; {pin.part.symbol.lib_id} draws it at one point with {others}, which the schematic joins: "
+        "stacked pins are one connection (pin.stack)"
+    )
 
 
 def kicad_net_name(name: str) -> str:

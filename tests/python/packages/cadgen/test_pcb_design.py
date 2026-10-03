@@ -65,6 +65,22 @@ class PcbDesignTest(unittest.TestCase):
         with self.assertRaisesRegex(DesignError, "marked no-connect"):
             board.connect(gnd, r1[2])
 
+    def test_pins_drawn_at_one_point_are_one_connection(self) -> None:
+        # A connector's repeated pins (a Pi header's GNDs, its two 3V3s) are stacked in KiCad's
+        # symbol: one point in the schematic, so connecting one connects the stack.
+        board = self.board()
+        hdr = board.part("Test:HDR", ref="J1")
+        self.assertEqual([pin.number for pin in hdr[2].stack], ["2", "4"])
+        gnd = board.net("GND")
+        board.connect(gnd, hdr[2])
+        self.assertIs(hdr[4].net, gnd)
+        board.no_connect(hdr[1])
+        self.assertEqual(hdr.unconnected(), [])
+        with self.assertRaisesRegex(DesignError, r"J1\.4 \(GND\)\) is already on net GND.*one point with Pin\(J1\.2"):
+            board.connect(board.net("VCC"), hdr[4])
+        with self.assertRaisesRegex(DesignError, r"J1\.3 \(3V3\)\) is marked no-connect.*stacked pins"):
+            board.connect(board.net("VCC"), hdr[3])
+
     def test_an_unnamed_net_is_named_after_its_first_pin_as_kicad_names_one(self) -> None:
         board = self.board()
         r1 = board.part("Test:R", footprint="Test:R_0603")

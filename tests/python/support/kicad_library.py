@@ -13,6 +13,9 @@ folder that a ``Board``/``Circuit`` takes as ``libraries=``:
   test point: a symbol in the BOM on a footprint excluded from it).
 - ``Test:FIDUCIAL``: one passive pin, and ``(in_bom no)``: on the board, not bought; a
   field of its own, ``Sim.Enable`` = ``0``, as KiCad's library symbols carry ``Sim.*``.
+- ``Test:HDR``: four pins drawn at two points, as KiCad stacks a connector's repeated pins:
+  ``3V3`` 1 (power out) and 3 at one, ``GND`` 2 and 4 at the other; default footprint
+  ``Test:SOT4``.
 - ``Test:PWR``: a power symbol (``(power global)``), which is a net, not a part.
 - ``power:PWR_FLAG``: the flag a board's schematic puts on a net powered from
   off the board (KiCad's own is in its ``power`` library; this one stands in).
@@ -61,6 +64,9 @@ SYMBOLS = (
     f'(symbol "FIDUCIAL" (pin_numbers (hide yes)) (in_bom no) (on_board yes) {_properties("FID", "FIDUCIAL", "", "Not bought")}'
     f'(property "Sim.Enable" "0" (at 0 0 0) (hide yes) {_FONT})'
     f'(symbol "FIDUCIAL_1_1" {_pin("passive", 0, 2.54, 270, "~", "1")}))'
+    f'(symbol "HDR" (in_bom yes) (on_board yes) {_properties("J", "HDR", "Test:SOT4", "Stacked pins")}'
+    f'(symbol "HDR_1_1" {_pin("power_out", -5.08, 2.54, 0, "3V3", "1")} {_pin("passive", -5.08, 2.54, 0, "3V3", "3")}'
+    f'{_pin("passive", -5.08, -2.54, 0, "GND", "2")} {_pin("passive", -5.08, -2.54, 0, "GND", "4")}))'
     f'(symbol "PWR" (power global) (pin_names (hide yes)) {_properties("#PWR", "PWR")}'
     f'(symbol "PWR_1_1" {_pin("power_in", 0, 0, 90, "~", "1")}))'
     ")"

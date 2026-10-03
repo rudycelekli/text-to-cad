@@ -61,10 +61,13 @@ part = board.part(
 )
 part[1]; part["2"]; part["VIN"]         # pins by number, or by a unique name
 part.pins(); part.unconnected()          # all pins; pins on no net and not no-connect
-pin.number, pin.name, pin.electrical_type, pin.net, pin.position, pin.pads
+pin.number, pin.name, pin.electrical_type, pin.net, pin.position, pin.pads, pin.stack
 ```
 
 - A symbol pin needs a footprint pad with the same number; the part is refused otherwise.
+- Pins a symbol draws at one point (a connector's repeated GND pins, a Pi header's two 3V3
+  pins) are `pin.stack`: one connection in the schematic, so connecting or no-connecting one
+  does the whole stack, and two nets on one stack are refused.
 - Multi-unit symbols (an LM358's A, B and power units) are one part: pins of every unit
   are on it, and the schematic draws each unit.
 - A power symbol (`power:GND`) is a net, not a part: use `board.net("GND")`.

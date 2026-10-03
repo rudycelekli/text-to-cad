@@ -129,6 +129,18 @@ class PcbDocumentsTest(unittest.TestCase):
         pads = {str(pad[1]): pad for pad in sexpr.find_all(_footprint(texts.pcb_tree, spare.ref), "pad")}
         self.assertEqual(sexpr.value(pads["2"], "net"), f"unconnected-({spare.ref}-Pad2)")
 
+    def test_an_open_stack_of_pins_is_one_net_named_as_kicad_names_it(self) -> None:
+        # KiCad joins pins drawn at one point and names an open stack after its least name:
+        # both pads must carry that one net, or parity reports a conflict.
+        board = self.board()
+        hdr = board.part("Test:HDR", ref="J1")
+        board.connect(board.net("GND"), hdr["2"])
+        board.no_connect(hdr[1])
+        board.place(hdr, at=(-12, 8))
+        footprint = _footprint(project_texts(board, name="amp").pcb_tree, "J1")
+        pads = {str(pad[1]): sexpr.value(pad, "net") for pad in sexpr.find_all(footprint, "pad")}
+        self.assertEqual(pads, {"1": "unconnected-(J1-3V3-Pad1)", "2": "GND", "3": "unconnected-(J1-3V3-Pad1)", "4": "GND"})
+
     def test_net_names_are_escaped_and_unit_lettered_as_kicad_derives_them(self) -> None:
         # KiCad escapes "/" in a net name (it separates sheets), and names an open pin's net with
         # its unit's letter on a symbol of several units; the pads must agree or parity fails.
