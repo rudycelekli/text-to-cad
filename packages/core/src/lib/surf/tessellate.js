@@ -1835,7 +1835,9 @@ export function tessellateComponent(index, floats, options = {}) {
       }
     }
   }
-  const scale = Math.max(length3(sub(max, min)), 1e-6);
+  // No loop samples (a component with no faces) leaves the box empty: the floor.
+  const extent = length3(sub(max, min));
+  const scale = Number.isFinite(extent) ? Math.max(extent, 1e-6) : 1e-6;
 
   // ONE polyline per model edge, sampled from its exact 3D curve. Every
   // adjacent face's boundary conforms to it (and the display overlay reuses
@@ -1945,6 +1947,13 @@ export function tessellateComponent(index, floats, options = {}) {
       if (value < min[d]) min[d] = value;
       if (value > max[d]) max[d] = value;
     }
+  }
+  if (!positions.length) {
+    // No triangles: a STEP product that is an empty compound, as some library models
+    // carry. A point at its own origin keeps its bounds finite for every consumer
+    // (the cache header, camera framing) rather than the infinite empty box.
+    min = [0, 0, 0];
+    max = [0, 0, 0];
   }
 
   const edges = [];

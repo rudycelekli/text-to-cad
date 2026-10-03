@@ -20,7 +20,7 @@ import {
   tessellationPayloadFacts,
   validateTessellationProbeRow,
 } from "./tessellationCache.js";
-import { DEFAULT_OPTIONS, TESSELLATION_VERSION } from "./tessellate.js";
+import { DEFAULT_OPTIONS, TESSELLATION_VERSION, tessellateComponent } from "./tessellate.js";
 
 let tessellationCache = createTessellationCache();
 function setTessellationCacheProvider(provider) {
@@ -202,6 +202,22 @@ test("decode rejects expected and embedded identity mismatches as cache misses",
   assert.equal(decodeComponentTessellation(rewriteHeader(bytes, (h) => {
     delete h.surfaceInput;
   })), null, "legacy-shaped header is a miss");
+});
+
+test("an empty component (a STEP product with no faces) tessellates to finite metadata and caches", () => {
+  // KiCad's own 3D model for a DFN-8 package carries an empty compound: a board's STEP
+  // with it must render and export, not fail the whole document on one empty part.
+  const component = tessellateComponent({ faces: [], edges: [] }, new Float32Array(0));
+  assert.equal(component.indices.length, 0);
+  assert.deepEqual(component.bounds, { min: [0, 0, 0], max: [0, 0, 0] });
+  assert.ok(Number.isFinite(component.scale) && component.scale > 0);
+  const entry = encodeComponentTessellation(component, {
+    surfaceInput: D, surfaceObject: O, tessellation: Q, edgeClasses: [],
+  });
+  const decoded = decodeComponentTessellation(entry, { surfaceInput: D, surfaceObject: O, tessellation: Q });
+  assert.ok(decoded);
+  assert.equal(decoded.component.indices.length, 0);
+  assert.deepEqual(decoded.component.bounds, { min: [0, 0, 0], max: [0, 0, 0] });
 });
 
 test("decode rejects corrupt, truncated and legacy versions", () => {
