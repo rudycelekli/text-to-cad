@@ -255,6 +255,11 @@ The viewer draws `.kicad_pcb` and `.kicad_sch` files read-only, as KiCad plots t
 pan, wheel or pinch to zoom, double-click to fit. Show the board and its schematic; a board
 with a 3D export also has its `.step`/`.glb` to show.
 
+What the user points at in the viewer reaches you as a board reference
+(`PCB/blinky.kicad_pcb#R1`, `#J1.2`, `#net:VBUS`, `#net:VBUS@x0y0`, `#@x3.5y3.5`).
+`pcb.read_board(path).resolve(ref)` answers it in the script's coordinates, and a part's
+`.script` is the line that made it: edit that line ([inspection](references/inspection.md)).
+
 ## Handoff
 
 Report the files written, the build's last line (built or draft, and what is unrouted), the
@@ -269,3 +274,4 @@ board and schematic ([Show the model](#show-the-model)).
 - [Routing](references/routing.md): hand routing and Freerouting.
 - [Simulation](references/simulation.md): SPICE testbenches over the board's own subcircuits.
 - [Manufacturing](references/manufacturing.md): Gerbers, BOM, placement and ordering.
+- [Inspection](references/inspection.md): board references from the viewer, `pcb.read_board`, and the script line behind each part.

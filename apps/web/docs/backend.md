@@ -193,7 +193,7 @@ cache reads and writes.
 | `GET /__cad/asset?file=...` | Allowed artifact bytes inside the served root. |
 | `GET /__cad/store?file=...` | Virtual render assets from the shared store. |
 | `GET /__cad/drawing?file=...` | A `.dxf` flattened to 2D render primitives; the DXF pane's only source. |
-| `GET /__cad/plot?file=...` | A KiCad board or schematic as KiCad plots it, or a wiring harness as WireViz draws it, one SVG per sheet; the plot pane's only source. |
+| `GET /__cad/plot?file=...` | A KiCad board or schematic as KiCad plots it (a board's layers and its index), or a wiring harness as WireViz draws it, one SVG per sheet; the plot pane's only source. |
 | `GET /__cad/artifact?file=...` | Artifact status and advisory progress. |
 | `POST /__cad/artifact?file=...` | Start importing a foreign STEP and answer at once (`compiling`; `compiled` when there is nothing to build); `&force=1` requests a rebuild. The import is followed through `GET /__cad/artifact`, whose `failed` carries the job's reason until the file's bytes change. |
 | `POST /__cad/sketches?name=...` | Save a PNG a copied prompt names by path (a Quick Edit's sketch) as scratch in the system's temporary directory; answers its absolute path. |
@@ -281,9 +281,10 @@ second thread pool here.
 A document drawn by its own tool, on the SERVER: a KiCad board or schematic is
 `kicad-cli`'s SVG plot of it (`cadgen.kicad.plot`), and a wiring harness
 (`<name>.harness.yml`) is WireViz's diagram of it (`cadgen.wireviz.plot`), so the plot
-pane draws what the tool draws and never parses its files. A board is one sheet — its
-layers stacked back to front, on KiCad's board background, with any unrouted connection
-drawn as a ratsnest line (a draft never looks finished); a schematic is one sheet per
+pane draws what the tool draws and never parses its files. A board is one sheet of
+layers, back to front, on KiCad's board background, with any unrouted connection drawn
+as a ratsnest line (a draft never looks finished), and the board's index beside it:
+what a person can point at, for picks and references. A schematic is one sheet per
 page, root first; a harness is one sheet on WireViz's page colour (`kind: "harness"`,
 sizes converted from Graphviz's points).
 
@@ -300,26 +301,64 @@ names how to install it, which the pane shows on its alert card.
 
 ```jsonc
 {
-  "schemaVersion": 1,
+  "schemaVersion": 2,
   "kicadVersion": "10.0.6",          // the tool's version; not every kind carries one
-  "kind": "board",                   // "board" | "schematic": wording only
-  "unrouted": 1,                     // a board's unconnected pairs (in its ratsnest); null for a schematic
-  "sheets": [{ "name": "blinky", "svg": "<svg …>", "width": 40, "height": 30,
-               "background": "#001023" }]
+  "kind": "board",                   // "board" | "schematic" | "harness": wording only
+  "unrouted": 1,                     // a board's unconnected pairs (in its ratsnest); null otherwise
+  "sheets": [{ "name": "blinky", "width": 40, "height": 30, "background": "#001023",
+               "layers": [            // a board's; a schematic or harness sheet has "svg" instead
+                 { "id": "B.Fab", "kind": "fab", "side": "back", "svg": "<svg …>" },
+                 { "id": "B.Cu", "kind": "copper", "side": "back", "svg": "<svg …>", "unpoured": "<svg …>" },
+                 …,                   // inner copper deepest first ("both"), F.Cu, F.SilkS, F.Fab
+                 { "id": "Edge.Cuts", "kind": "outline", "side": "both", "svg": "<svg …>" },
+                 { "id": "ratsnest", "kind": "ratsnest", "side": "both", "svg": "<svg …>" },  // a draft's
+                 { "id": "drills", "kind": "drill", "side": "both", "svg": "<svg …>" }] }],
+  "board": {                         // the board's index, in SHEET millimetres
+    "origin": [20, 15],              // the script's origin (the drill/place origin) on the sheet
+    "parts": [{ "ref": "R1", "value": "1k", "footprint": "Resistor_SMD:R_0603_1608Metric",
+                "side": "top", "at": [35.8, 15], "rotation": 0, "fields": { "Script": "blinky.py:12" },
+                "script": "blinky.py:12", "dnp": false, "outline": [[x, y], …] }],
+    "pads":   [{ "part": "R1", "number": "2", "name": null, "net": "Net-(D1-A)", "type": "passive",
+                 "side": "top", "at": [36.65, 15], "polygon": [[x, y], …] }],
+    "tracks": [{ "net": "VBUS", "layer": "F.Cu", "width": 1, "points": [[5, 15], [35, 15]] }],
+    "vias":   [{ "net": "GND", "at": [x, y], "diameter": 0.6, "drill": 0.3 }],
+    "zones":  [{ "net": "GND", "layer": "B.Cu", "outline": [[x, y], …] }],
+    "holes":  [{ "at": [x, y], "diameter": 3, "part": "H1" }],
+    "outline": [[[x, y], …]],        // Edge.Cuts polylines; a closed one repeats its first point
+    "nets":   [{ "name": "TX/RX", "class": "Default" }],
+    "findings": [{ "check": "unconnected", "severity": "error", "type": "unconnected_items",
+                   "description": "Missing connection between items",
+                   "items": [{ "text": "Pad 2 [Net-(D1-A)] of R1 on F.Cu", "ref": "#R1.2", "at": [36.65, 15] }] }]
+  }
 }
 ```
 
-- **Sheets** are KiCad's SVGs, unchanged but for the timestamped `<title>` KiCad
-  stamps on them: user units are millimetres, y down, viewBox `0 0 width height`.
-  A board's SVG is transparent outside what is drawn; each sheet says the colour it
-  sits on (`#001023` behind a board, `#F5F4EF` behind a schematic sheet).
+- **Layers and sheets** are KiCad's SVGs, unchanged but for the timestamped `<title>`
+  KiCad stamps on them and, for a board, its drill holes: KiCad draws them on every
+  layer it plots alone, so they are cut from each and drawn once, last, as the `drills`
+  layer, as KiCad draws them when it plots the whole stack. User units are millimetres,
+  y down, viewBox `0 0 width height`, every layer of a board on the same page; each sheet
+  says the colour it sits on (`#001023` behind a board, `#F5F4EF` behind a schematic
+  sheet). One `kicad-cli pcb export svg --mode-multi` run plots the layers, a second the
+  copper without its pours (`unpoured`, on a layer whose pours have fills).
+- **The board's index** (`cadgen.kicad.board_index`, read from the `.kicad_pcb` alone) is
+  in SHEET millimetres: y down, from the corner of the page KiCad fitted to the board,
+  whose offset from KiCad's own frame the server measures with a calibration mark it
+  plots in the same run. A point in the script's frame is `(x - origin[0], origin[1] - y)`.
+  Net names are as KiCad shows them (`TX/RX`), a pad's polygon is its copper's outline
+  and its `type` the pin's electrical type, a part's `outline` is its courtyard (else the
+  box round its pads), its `script` the line that made it (the hidden `Script` field a
+  cadgen build writes). `findings` is every finding of the plot's DRC (custom rules
+  applied), each item with a board reference when it is a pad (`#R1.2`), something a
+  part draws (`#R1`) or a track or via (`#net:VIN@x..y..`).
 - The client stacks the sheets top to bottom, each centred on the widest, and draws
-  them as images on a canvas (`packages/ui/docs/cad-renderer.md#plot-renderer`).
+  them as images on a canvas (`packages/ui/docs/cad-renderer.md#plot-renderer`): a
+  board's layers in order, poured, seen from the top, unless its view says otherwise.
 
 The payload is derived data, cached in the store's `drawing` index under the
-document's bytes (a schematic's: every sheet beside it), the plot scheme and the
-tool's version (WireViz's and Graphviz's for a harness), so a second request
-re-serves stored bytes without running the tool. A cold plot runs it on the request
-thread — for a board a DRC and an SVG export, under a second for a small board, tens of
-seconds for a large one — which is why the client waits up to three minutes for this
-route.
+document's bytes (a board's with the `.kicad_pro` and `.kicad_dru` beside it; a
+schematic's: every sheet beside it), the plot scheme and the tool's version (WireViz's
+and Graphviz's for a harness), so a second request re-serves stored bytes without
+running the tool. A cold plot runs it on the request thread — for a board a DRC and one
+or two SVG exports, a couple of seconds for a small board, tens of seconds for a large
+one — which is why the client waits up to three minutes for this route.
