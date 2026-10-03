@@ -10,16 +10,16 @@ const BOARD = {
   origin: [5, 25],
   nets: [{ name: "VIN", class: "Power" }, { name: "GND", class: "Default" }, { name: "OUT", class: "Default" }],
   parts: [
-    { ref: "R1", value: "10k", footprint: "Resistor_SMD:R_0603_1608Metric", side: "top", at: [10, 5], rotation: 0,
+    { ref: "R1", value: "10k", footprint: "Resistor_SMD:R_0603_1608Metric", side: "top", at: [15, 20], rotation: 0,
       fields: { MPN: "RC0603" }, script: "board.py:12", outline: rect(15, 20, 3, 1.4) },
-    { ref: "U1", value: "AMP", footprint: "Test:SOT4", side: "bottom", at: [25, 15], rotation: 90, fields: {}, outline: rect(30, 10, 4, 3) },
+    { ref: "U1", value: "AMP", footprint: "Test:SOT4", side: "bottom", at: [30, 10], rotation: 90, fields: {}, outline: rect(30, 10, 4, 3) },
   ],
   pads: [
-    { part: "R1", number: "1", name: "~", net: "VIN", type: "passive", side: "top", at: [9.175, 5], polygon: rect(14.175, 20, 0.8, 0.95) },
-    { part: "R1", number: "2", name: "~", net: "GND", type: "passive", side: "top", at: [10.825, 5], polygon: rect(15.825, 20, 0.8, 0.95) },
-    { part: "U1", number: "2", name: "OUT", net: "OUT", type: "output", side: "bottom", at: [26.5, 15.95], polygon: rect(31.5, 9.05, 0.8, 0.95) },
-    { part: "U1", number: "3", name: "GND", net: "GND", type: "passive", side: "bottom", at: [23.5, 14.05], polygon: rect(28.5, 10.95, 0.8, 0.95) },
-    { part: "U1", number: "3", name: "GND", net: "GND", type: "passive", side: "bottom", at: [23.5, 15.95], polygon: rect(28.5, 9.05, 0.8, 0.95) },
+    { part: "R1", number: "1", name: "~", net: "VIN", type: "passive", side: "top", at: [14.175, 20], polygon: rect(14.175, 20, 0.8, 0.95) },
+    { part: "R1", number: "2", name: "~", net: "GND", type: "passive", side: "top", at: [15.825, 20], polygon: rect(15.825, 20, 0.8, 0.95) },
+    { part: "U1", number: "2", name: "OUT", net: "OUT", type: "output", side: "bottom", at: [31.5, 9.05], polygon: rect(31.5, 9.05, 0.8, 0.95) },
+    { part: "U1", number: "3", name: "GND", net: "GND", type: "passive", side: "bottom", at: [28.5, 10.95], polygon: rect(28.5, 10.95, 0.8, 0.95) },
+    { part: "U1", number: "3", name: "GND", net: "GND", type: "passive", side: "bottom", at: [28.5, 9.05], polygon: rect(28.5, 9.05, 0.8, 0.95) },
   ],
   tracks: [{ net: "VIN", layer: "F.Cu", width: 0.5, points: [[14.175, 20], [14.175, 12]] }],
   vias: [{ net: "GND", at: [20, 15], diameter: 0.6, drill: 0.3 }],
@@ -58,7 +58,7 @@ test("a pin with two pads is one pin, and a pick on either names it", () => {
 });
 
 test("the side looked at decides between what overlaps", () => {
-  const board = { ...BOARD, parts: [...BOARD.parts, { ref: "C9", value: "1u", footprint: "x", side: "top", at: [25, 15], rotation: 0, fields: {}, outline: rect(30, 10, 1, 1) }] };
+  const board = { ...BOARD, parts: [...BOARD.parts, { ref: "C9", value: "1u", footprint: "x", side: "top", at: [30, 10], rotation: 0, fields: {}, outline: rect(30, 10, 1, 1) }] };
   const index = createBoardIndex(board);
   assert.equal(index.pick([30, 10], { mode: "parts" }).selector, "#C9");
   assert.equal(index.pick([30, 10], { mode: "parts", view: "bottom" }).selector, "#U1");

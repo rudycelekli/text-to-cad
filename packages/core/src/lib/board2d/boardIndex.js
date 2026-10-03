@@ -3,11 +3,12 @@
  * point of the picture, the board reference a person hands the agent for it, and back again from a
  * reference to what it names.
  *
- * Geometry arrives in SHEET coordinates (millimetres, y down, the plot sheet's corner) and is kept
- * in PAGE coordinates (the sheet's place in the laid-out plot added: `layoutPlot`), the frame the
- * view's transform maps to the screen. What a person or an agent reads is in SCRIPT coordinates:
- * millimetres, y up, from the board's drill/place origin (`index.origin`, in sheet coordinates),
- * the frame `board.place` and the build's checks speak.
+ * Geometry arrives in SHEET coordinates (millimetres, y down, the plot sheet's corner) — every
+ * point of it, a part's and a pad's place included — and is kept in PAGE coordinates (the sheet's
+ * place in the laid-out plot added: `layoutPlot`), the frame the view's transform maps to the
+ * screen. What a person or an agent reads is in SCRIPT coordinates (`toScript`): millimetres, y
+ * up, from the board's drill/place origin (`index.origin`, in sheet coordinates), the frame
+ * `board.place` and the build's checks speak.
  *
  * Pure: no canvas, no DOM. The viewer picks with it on every pointer move, so it is a flat scan of
  * plain arrays: a board of thousands of items is still well under a millisecond.
@@ -66,6 +67,12 @@ function bounds(points) {
   return [minX, minY, maxX, maxY];
 }
 
+function centre(polygon) {
+  if (!polygon.length) return null;
+  const [minX, minY, maxX, maxY] = bounds(polygon);
+  return [(minX + maxX) / 2, (minY + maxY) / 2];
+}
+
 // Copper on the side a view looks at comes first: a top view picks the top's pad over the bottom's.
 function layerSide(layer) {
   if (typeof layer !== "string") return "both";
@@ -122,7 +129,7 @@ export function createBoardIndex(board, sheet = {}) {
     const outline = pageList(entry.outline);
     parts.set(ref, {
       kind: "part", ref, value: String(entry.value ?? ""), footprint: String(entry.footprint ?? ""),
-      side: entry.side === "bottom" ? "bottom" : "top", at: point(entry.at) || [0, 0], rotation: Number(entry.rotation) || 0,
+      side: entry.side === "bottom" ? "bottom" : "top", at: page(entry.at) || [sheetX, sheetY], rotation: Number(entry.rotation) || 0,
       fields: entry.fields && typeof entry.fields === "object" ? { ...entry.fields } : {}, script: entry.script ? String(entry.script) : "",
       dnp: Boolean(entry.dnp), outline, area: outline.length > 2 ? polygonArea(outline) : Infinity, pads: []
     });
@@ -137,7 +144,7 @@ export function createBoardIndex(board, sheet = {}) {
     const polygon = pageList(entry.polygon);
     const pad = {
       kind: "pad", ref: part.ref, number, name: String(entry.name ?? ""), net: String(entry.net ?? ""), type: String(entry.type ?? ""),
-      side: entry.side === "both" ? "both" : entry.side === "bottom" ? "bottom" : "top", at: point(entry.at) || [0, 0], polygon,
+      side: entry.side === "both" ? "both" : entry.side === "bottom" ? "bottom" : "top", at: page(entry.at) || centre(polygon) || part.at, polygon,
       area: polygon.length > 2 ? polygonArea(polygon) : 0, part
     };
     // A pad repeated under one number (a tab, a USB-C's stacked pads) is one pin: its first pad names it.
@@ -293,7 +300,7 @@ export function createBoardIndex(board, sheet = {}) {
   function extent(resolved) {
     if (!resolved) return null;
     if (resolved.kind === "part") return bounds([...resolved.part.outline, ...resolved.part.pads.flatMap((pad) => pad.polygon)]);
-    if (resolved.kind === "pad") return bounds(resolved.pad.polygon.length ? resolved.pad.polygon : [toPage(resolved.pad.at)]);
+    if (resolved.kind === "pad") return bounds(resolved.pad.polygon.length ? resolved.pad.polygon : [resolved.pad.at]);
     if (resolved.kind === "net") {
       const net = resolved.net;
       const points = [...net.pads.flatMap((pad) => pad.polygon), ...net.tracks.flatMap((track) => track.points), ...net.vias.map((via) => via.at)];
@@ -311,7 +318,7 @@ export function createBoardIndex(board, sheet = {}) {
       const distance = Math.hypot(at[0] - candidate[0], at[1] - candidate[1]);
       if (distance <= tolerance && (!best || distance < best.distance)) best = { at: candidate, distance, kind, label, selector };
     };
-    if (want("pads")) for (const pad of pads.values()) consider(toPage(pad.at), "pad", `${pad.ref}.${pad.number}`, formatBoardRefSelector({ kind: "pad", ref: pad.ref, pad: pad.number }));
+    if (want("pads")) for (const pad of pads.values()) consider(pad.at, "pad", `${pad.ref}.${pad.number}`, formatBoardRefSelector({ kind: "pad", ref: pad.ref, pad: pad.number }));
     if (want("copper")) {
       for (const via of vias) consider(via.at, "via", `via ${via.net}`);
       for (const track of tracks) { consider(track.points[0], "track", `track ${track.net}`); consider(track.points[track.points.length - 1], "track", `track ${track.net}`); }

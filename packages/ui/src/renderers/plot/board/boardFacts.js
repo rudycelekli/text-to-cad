@@ -39,7 +39,7 @@ export function boardReferenceFacts(resolved, index) {
       rows: [
         ["Footprint", part.footprint.split(":").pop() || part.footprint],
         ["Side", titleCase(part.side)],
-        ["Position", position(part.at)],
+        ["Position", position(index.toScript(part.at))],
         ["Rotation", `${Number(part.rotation).toLocaleString(undefined, { maximumFractionDigits: 2 })}°`],
         ["Pads", String(pins)],
         ...fields,
@@ -58,7 +58,7 @@ export function boardReferenceFacts(resolved, index) {
         ...(name(pad) ? [["Pin", name(pad)]] : []),
         ...(pad.type ? [["Type", pad.type.replaceAll("_", " ")]] : []),
         ["Side", pad.side === "both" ? "Both (through-hole)" : titleCase(pad.side)],
-        ["Position", position(pad.at)],
+        ["Position", position(index.toScript(pad.at))],
         ["Part", [pad.part.ref, pad.part.value].filter(Boolean).join(" · ")],
         id,
       ],
