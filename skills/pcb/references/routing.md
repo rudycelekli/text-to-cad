@@ -25,6 +25,13 @@ from their ends. Draw by hand:
   differential pairs (USB, CAN: side by side, equal length). The router knows neither
   length matching nor pairs.
 
+A net class sets the width of every connection the router makes on its nets, the thin ones
+too: a 1 mm power class cannot reach the same net's pad on a 0.65 mm-pitch transistor or a
+0603 enable resistor between fine-pitch pins, and those connections stay unrouted. For a
+power net with small pads on it, draw its current path wide by hand (`width=`) and leave the
+net in the default class; the router finishes its thin branches. End a hand-drawn branch on a
+vertex of the track it leaves (a point of both polylines) or on a pad, never mid-segment.
+
 ## Pour ground
 
 Ground is a zone (`board.zone`), filled by KiCad after routing, around the routes.
@@ -35,6 +42,12 @@ Ground is a zone (`board.zone`), filled by KiCad after routing, around the route
   pads until the pour reaches some through one thermal spoke (DRC `starved_thermal`: use
   `pads="solid"`), and a pour that routes cut in two is an island the draft lists as
   unrouted until a via or track joins it.
+- **Starved thermals after routing**: through-hole header pins at 2.54 mm leave the router's
+  tracks no room for two spokes. With every SMD part on top, only through-hole pads reach the
+  bottom pour, so connect it solid there (`board.zone(gnd, layers=["B.Cu"], pads="solid")`)
+  and keep the top's thermals for reflow. A ground pad in a fine-pitch row (a USB-C
+  receptacle's) is reached by one spoke: tie it with a short track to the connector's own
+  ground (its shell tab) or into the pour.
 - **4 layers** (signal, ground, power, signal): planes on the inner layers, and keep the
   router's tracks off them so they stay whole:
   `board.zone(gnd, layers=["In1.Cu"])`, `board.zone(v33, layers=["In2.Cu"])`,

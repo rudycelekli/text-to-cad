@@ -16,7 +16,7 @@ models/
 ├── examples/         standalone demo PARTS, one script each
 ├── assemblies/       demo ASSEMBLIES, one src/<assembly>/ group each
 ├── drawings/         2D `@dxf` drawings, one script each
-├── electronics/      a `@pcb` board, its case and a `@harness` cable
+├── electronics/      `@pcb` boards (a Pi HAT among them), a case and a `@harness` cable
 ├── f1/ f14d/ hypercar/ moonwatch/ motorbike/ qdd_actuator/ radial/ w16/
 ├── tendon_hand/      tendon-driven research hand (source-only)
 ├── falcon_heavy/     SpaceX public-source reconstruction

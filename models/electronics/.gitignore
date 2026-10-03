@@ -4,5 +4,7 @@
 !/STEP/imported/
 /HARNESS/*
 !/HARNESS/imported/
+/GLB/*
+!/GLB/imported/
 /tmp/
 __pycache__/
