@@ -19,6 +19,12 @@ KiCad ships: a circuit like a board, built by the same functions, whose runs
 are facts for a script to assert (``pcb.SimulationError`` when ngspice cannot
 solve it).
 
+``pcb.read_board(path)`` reads any KiCad board back for the references a
+person copies from the viewer (``#U3``, ``#U3.9``, ``#net:VIN``,
+``#net:VIN@x40.1y21.6``, ``#@x40.1y21.6``): ``.resolve(ref)`` answers what one
+names, in the script's coordinates, and a part's ``script`` is the line that
+made it (:mod:`cadgen.kicad.board_index`).
+
 Import discipline: nothing here pulls in OCP or touches KiCad at module scope.
 """
 
@@ -54,6 +60,7 @@ __all__ = [
     "find_symbols",
     "gerber",
     "pos",
+    "read_board",
     "snapshot",
     "validate",
 ]
@@ -187,6 +194,10 @@ def __getattr__(name: str):
         from cadgen.kicad import library
 
         return getattr(library, name)
+    if name in {"read_board", "BoardView"}:
+        from cadgen.kicad import board_index
+
+        return getattr(board_index, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 
