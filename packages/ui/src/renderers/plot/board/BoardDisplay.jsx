@@ -14,8 +14,10 @@ const SIDES = [{ value: "top", label: "Top" }, { value: "bottom", label: "Bottom
 const LAYER_PRESETS = [
   { value: "all", label: "All layers" }, { value: "copper", label: "Copper" }, { value: "assembly", label: "Silkscreen and fab" },
 ];
-// What each preset draws, by layer kind; the outline and the ratsnest always.
-const PRESET_KINDS = Object.freeze({ copper: ["copper", "outline", "ratsnest"], assembly: ["silk", "fab", "outline", "ratsnest"] });
+// What each preset draws, by layer kind; the outline, the drilled holes and the ratsnest always.
+const PRESET_KINDS = Object.freeze({
+  copper: ["copper", "drill", "outline", "ratsnest"], assembly: ["silk", "fab", "drill", "outline", "ratsnest"],
+});
 
 /** A stored display, or the defaults where it says nothing usable. */
 export function readBoardDisplay(raw) {
