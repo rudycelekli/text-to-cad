@@ -31,13 +31,16 @@ origin). The payload's ``board`` is the board's index
 origin there, and ``findings``: everything the plot's one DRC run reported,
 each item with a board reference when it is a pad, a part's or copper.
 
-A schematic is one picture per sheet, the root first.
+A schematic is one picture per sheet, the root first, and its ``schematic``:
+the schematic's index (:mod:`cadgen.kicad.schematic_index`) on those sheets --
+parts, pins, wires, labels and nets in each sheet's millimetres, the frame of
+its SVG, with KiCad's own net names from one netlist export.
 
 Everything runs on a staged copy (``kicad-cli`` writes beside what it reads).
 The payload is derived data: cached in the store's ``drawing`` index, keyed by
 the document's bytes (a board's with its project and rules files; a
-schematic's: every sheet beside it), this module's scheme and the KiCad
-version.
+schematic's: every sheet beside it and its project, which classes its nets),
+this module's scheme and the KiCad version.
 """
 
 from __future__ import annotations
@@ -366,6 +369,7 @@ def _schematic_files(path: Path) -> list[Path]:
 
 def _schematic_payload(path: Path, install) -> dict:
     from cadgen.kicad.cli import run_kicad_cli
+    from cadgen.kicad.schematic_index import payload_index
 
     head = path.read_text(encoding="utf-8")[:200]
     if not head.lstrip().startswith("(kicad_sch"):
@@ -389,7 +393,11 @@ def _schematic_payload(path: Path, install) -> dict:
             width, height = _svg_size(svg)
             name = plot.stem[len(path.stem) + 1 :] if plot.stem.startswith(path.stem + "-") else plot.stem
             sheets.append({"name": name or path.stem, "svg": svg, "width": width, "height": height, "background": SCHEMATIC_BACKGROUND})
-    return {"kind": "schematic", "sheets": sheets, "unrouted": None}
+        try:
+            index = payload_index(stage / path.name, install, [sheet["name"] for sheet in sheets])
+        except ValueError as error:
+            raise PlotError(str(error)) from None
+    return {"kind": "schematic", "sheets": sheets, "schematic": index, "unrouted": None}
 
 
 def build_plot(path: Path, *, install=None) -> dict:
@@ -409,12 +417,12 @@ def build_plot(path: Path, *, install=None) -> dict:
 
 def _document_hash(path: Path) -> str:
     """The bytes a plot is drawn from: a board's file and the project and rules beside it (the
-    DRC's findings and the nets' classes read them), a schematic's every sheet."""
+    DRC's findings and the nets' classes read them), a schematic's every sheet and its project."""
     digest = hashlib.sha256()
     if path.suffix.lower() == ".kicad_pcb":
         files = [path] + [sibling for sibling in (path.with_suffix(".kicad_pro"), path.with_suffix(".kicad_dru")) if sibling.is_file()]
     else:
-        files = _schematic_files(path)
+        files = _schematic_files(path) + [sibling for sibling in (path.with_suffix(".kicad_pro"),) if sibling.is_file()]
     for entry in files:
         digest.update(entry.name.encode("utf-8") + b"\0")
         digest.update(hashlib.sha256(entry.read_bytes()).digest())

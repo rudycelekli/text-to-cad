@@ -1,9 +1,10 @@
 """What the viewer and ``cadgen pcb validate`` read from a board, through a real KiCad 10.
 
 The plot payload is KiCad's own SVG of each layer of the board (with a ratsnest
-when it is a draft), the board's index on that sheet, and each schematic sheet;
-``pcb.validate`` is KiCad's ERC and DRC of any project, and checking never
-writes into it. ``pcb.read_board`` reads a board KiCad filled. Needs KiCad 10.
+when it is a draft), the board's index on that sheet, and each schematic sheet
+with the schematic's index on them; ``pcb.validate`` is KiCad's ERC and DRC of
+any project, and checking never writes into it. ``pcb.read_board`` reads a
+board KiCad filled. Needs KiCad 10.
 """
 
 from __future__ import annotations
@@ -119,12 +120,22 @@ class PcbPlotAndValidateTest(unittest.TestCase):
         self.assertEqual([(item.kind, item.layer) for item in pour.items], [("zone", "B.Cu")])
         self.assertIn(pour.items[0], board.at(-10, -10).copper)
 
-    def test_a_schematic_plots_one_sheet_per_page(self) -> None:
+    def test_a_schematic_plots_one_sheet_per_page_with_its_index(self) -> None:
         from cadgen.kicad.plot import SCHEMATIC_BACKGROUND, build_plot
 
         payload = build_plot(self.folder / "finished" / "blinky.kicad_sch")
         self.assertEqual((payload["kind"], len(payload["sheets"])), ("schematic", 1))
         self.assertEqual(payload["sheets"][0]["background"], SCHEMATIC_BACKGROUND)
+        # The index is on the plot's sheets: KiCad's library symbols placed, KiCad's nets.
+        index = payload["schematic"]
+        self.assertEqual([sheet["name"] for sheet in index["sheets"]], ["blinky"])
+        self.assertEqual([part["ref"] for part in index["parts"]], ["D1", "J1", "R1"])
+        line = next(number for number, text in enumerate(BOARD.splitlines(), start=1) if "r1 = board.part(" in text)
+        self.assertEqual(index["parts"][2]["script"], f"blinky.py:{line}")
+        nets = {(pin["part"], pin["number"]): pin["net"] for pin in index["pins"]}
+        self.assertEqual((nets["J1", "1"], nets["R1", "1"], nets["J1", "2"], nets["D1", "1"]), ("VBUS", "VBUS", "GND", "GND"))
+        self.assertEqual(nets["R1", "2"], nets["D1", "2"])
+        self.assertTrue(all(item["net"] for item in index["wires"] + index["labels"]))
 
     def test_the_payload_is_cached_by_the_documents_bytes(self) -> None:
         from cadgen.kicad.plot import plot_payload_bytes

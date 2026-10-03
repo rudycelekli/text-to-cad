@@ -285,8 +285,8 @@ pane draws what the tool draws and never parses its files. A board is one sheet 
 layers, back to front, on KiCad's board background, with any unrouted connection drawn
 as a ratsnest line (a draft never looks finished), and the board's index beside it:
 what a person can point at, for picks and references. A schematic is one sheet per
-page, root first; a harness is one sheet on WireViz's page colour (`kind: "harness"`,
-sizes converted from Graphviz's points).
+page, root first, and the schematic's index on those sheets; a harness is one sheet on
+WireViz's page colour (`kind: "harness"`, sizes converted from Graphviz's points).
 
 `cadgen pcb snapshot` and `cadgen harness snapshot` draw the SAME payload: their
 resolver calls the same builder (`plot_payload_bytes`), writes the bytes where the
@@ -333,6 +333,26 @@ names how to install it, which the pane shows on its alert card.
 }
 ```
 
+A schematic's payload has `"kind": "schematic"`, a sheet per page (each with `svg`), and
+the schematic's index:
+
+```jsonc
+"schematic": {                       // in each sheet's millimetres; "sheet" indexes "sheets"
+  "sheets": [{ "name": "blinky", "path": "/", "file": "blinky.kicad_sch", "title": "blinky" }],
+  "parts":  [{ "ref": "R1", "value": "1k", "lib": "Device:R", "footprint": "Resistor_SMD:R_0603_1608Metric",
+               "fields": { "Script": "blinky.py:12" }, "script": "blinky.py:12", "dnp": false,
+               "units": [{ "unit": 1, "sheet": 0, "at": [x, y], "rotation": 0, "mirror": null,  // or "x", "y"
+                           "outline": [[x, y], …] }] }],
+  "pins":   [{ "part": "R1", "number": "2", "name": null, "type": "passive", "unit": 1, "sheet": 0,
+               "net": "Net-(D1-A)", "at": [x, y], "end": [x, y], "hidden": false }],
+  "wires":  [{ "net": "VBUS", "sheet": 0, "points": [[x, y], [x, y]] }],
+  "labels": [{ "net": "VBUS", "sheet": 0, "text": "VBUS", "kind": "global", "at": [x, y], "outline": [[x, y], …] }],
+  "junctions":  [{ "net": "GND", "sheet": 0, "at": [x, y] }],
+  "noConnects": [{ "sheet": 0, "at": [x, y], "part": "U3", "pin": "10" }],   // part, pin: null off a pin
+  "nets":   [{ "name": "/Power/EN", "class": "Default" }]
+}
+```
+
 - **Layers and sheets** are KiCad's SVGs, unchanged but for the timestamped `<title>`
   KiCad stamps on them and, for a board, its drill holes: KiCad draws them on every
   layer it plots alone, so they are cut from each and drawn once, last, as the `drills`
@@ -351,14 +371,25 @@ names how to install it, which the pane shows on its alert card.
   cadgen build writes). `findings` is every finding of the plot's DRC (custom rules
   applied), each item with a board reference when it is a pad (`#R1.2`), something a
   part draws (`#R1`) or a track or via (`#net:VIN@x..y..`).
+- **The schematic's index** (`cadgen.kicad.schematic_index`) is in KiCad's schematic
+  frame, which is each sheet's SVG frame: millimetres, y down, from the page's corner.
+  Its `sheets` are the payload's, in order (a sheet used twice in a hierarchy is two,
+  each with its own references; `path` is the one KiCad prefixes local nets with). Net
+  names are KiCad's netlist's (`GND`, `/Power/EN`, `unconnected-(…)` for a pin left
+  open); a wire, label or junction is on its pins' net, a label no pin reaches on the net
+  it names if KiCad has one, else `null`. A unit's `outline` is the box round its body, a
+  pin's `at` where a wire connects and `end` where it meets the body; a label's `kind` is
+  `local`, `global`, `hierarchical` or `power` (a power symbol, its text the symbol's
+  value), its `outline` a generous box round its text.
 - The client stacks the sheets top to bottom, each centred on the widest, and draws
   them as images on a canvas (`packages/ui/docs/cad-renderer.md#plot-renderer`): a
   board's layers in order, poured, seen from the top, unless its view says otherwise.
 
-The payload is derived data, cached in the store's `drawing` index under the
-document's bytes (a board's with the `.kicad_pro` and `.kicad_dru` beside it; a
-schematic's: every sheet beside it), the plot scheme and the tool's version (WireViz's
+The payload is derived data, cached in the store's `drawing` index under the document's
+bytes (a board's with the `.kicad_pro` and `.kicad_dru` beside it; a schematic's: every
+sheet beside it and its `.kicad_pro`), the plot scheme and the tool's version (WireViz's
 and Graphviz's for a harness), so a second request re-serves stored bytes without
 running the tool. A cold plot runs it on the request thread — for a board a DRC and one
 or two SVG exports, a couple of seconds for a small board, tens of seconds for a large
-one — which is why the client waits up to three minutes for this route.
+one; for a schematic an SVG and a netlist export — which is why the client waits up to
+three minutes for this route.
