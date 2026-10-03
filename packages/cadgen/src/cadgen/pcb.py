@@ -23,7 +23,11 @@ solve it).
 person copies from the viewer (``#U3``, ``#U3.9``, ``#net:VIN``,
 ``#net:VIN@x40.1y21.6``, ``#@x40.1y21.6``): ``.resolve(ref)`` answers what one
 names, in the script's coordinates, and a part's ``script`` is the line that
-made it (:mod:`cadgen.kicad.board_index`).
+made it (:mod:`cadgen.kicad.board_index`). ``pcb.read_schematic(path)`` answers
+the same references on a schematic (``#U3``, ``#U3.9``, ``#net:VIN``), sheets
+within sheets included: a part with the units it draws on each sheet, a pin, a
+net by KiCad's own name, from one run of KiCad's netlist export
+(:mod:`cadgen.kicad.schematic_index`).
 
 Import discipline: nothing here pulls in OCP or touches KiCad at module scope.
 """
@@ -61,6 +65,7 @@ __all__ = [
     "gerber",
     "pos",
     "read_board",
+    "read_schematic",
     "snapshot",
     "validate",
 ]
@@ -198,6 +203,10 @@ def __getattr__(name: str):
         from cadgen.kicad import board_index
 
         return getattr(board_index, name)
+    if name in {"read_schematic", "SchematicView"}:
+        from cadgen.kicad import schematic_index
+
+        return getattr(schematic_index, name)
     raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
 
 

@@ -368,8 +368,9 @@ src/cadgen/
                          #   plot, solid, fab), simulation (spice, ngspice,
                          #   sim), autorouting (specctra, route: the
                          #   Freerouting program, GPL-3.0, never shipped) and
-                         #   board references read back (refs, board_index:
-                         #   pcb.read_board)
+                         #   board and schematic references read back (refs,
+                         #   board_index: pcb.read_board; schematic_index:
+                         #   pcb.read_schematic, KiCad's netlist naming nets)
   wireviz/               # harnesses: the harness model and its checks
                          #   (design), colour codes, the WireViz YAML
                          #   writer (document), and every wireviz run

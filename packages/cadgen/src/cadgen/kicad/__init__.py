@@ -22,9 +22,10 @@ Modules, each importing nothing heavy at module scope:
 - ``check``: a build's fill, ERC and DRC; ``cadgen pcb validate``'s checks.
 - ``plot`` / ``solid`` / ``fab``: the viewer's plots, the populated board in
   3D, and the manufacturing files.
-- ``refs`` / ``board_index``: board references (``#U3.9``, ``#net:VIN``...), the
-  language a person points with in the viewer, and any board read back as what
-  they point at: ``pcb.read_board(path).resolve(ref)``.
+- ``refs`` / ``board_index`` / ``schematic_index``: board references (``#U3.9``,
+  ``#net:VIN``...), the language a person points with in the viewer, and any
+  board or schematic read back as what they point at:
+  ``pcb.read_board(path).resolve(ref)``, ``pcb.read_schematic(path).resolve(ref)``.
 - ``spice`` / ``ngspice`` / ``sim``: simulation -- the netlist from KiCad's
   ``Sim.*`` fields, the simulator KiCad ships, and the ``Testbench``.
 - ``specctra`` / ``route``: autorouting -- a board as Freerouting's Specctra
