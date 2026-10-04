@@ -1,4 +1,4 @@
-"""What a KiCad schematic's plot reads and is cached by, without KiCad.
+"""What a KiCad schematic's plot reads and is cached by, and which of a board's DRC findings it keeps, without KiCad.
 
 A plot reads its root and every sheet under it, wherever the sheets lie (a subfolder, a folder
 beside the root's), and nothing else a document names; KiCad plots a copy of those files staged
@@ -9,6 +9,8 @@ same hierarchy is the KiCad suite's (tests/python/packages/kicad/test_pcb_schema
 
 from __future__ import annotations
 
+import json
+
 import tempfile
 import unittest
 from pathlib import Path
@@ -18,7 +20,7 @@ from tests.python.support.paths import add_repo_path
 
 add_repo_path("packages/cadgen/src")
 
-from cadgen.kicad.plot import _inputs  # noqa: E402
+from cadgen.kicad.plot import _drc_report, _inputs  # noqa: E402
 from cadgen.kicad.schematic_index import read_index, stage_files  # noqa: E402
 
 
@@ -69,6 +71,13 @@ class PlotInputsTest(unittest.TestCase):
         root.write_text(root.read_text(encoding="utf-8").replace('"power.kicad_sch"', '"notes.txt"'), encoding="utf-8")
         self.assertNotIn(notes, [path for path, _data in _inputs(root).files])
         self.assertNotIn("Power Stäge", [sheet.name for sheet in read_index(root).sheets])
+
+    def test_a_boards_findings_leave_out_where_its_footprints_came_from(self) -> None:
+        # The plot's DRC has no library tables: "not in the library" says nothing about the board.
+        report = self.folder / "drc.json"
+        violation = lambda kind: {"type": kind, "severity": "warning", "description": kind, "items": [{"description": "J1", "uuid": "u", "pos": {"x": 1, "y": 2}}]}
+        report.write_text(json.dumps({"violations": [violation("lib_footprint_issues"), violation("lib_footprint_mismatch"), violation("clearance")]}), encoding="utf-8")
+        self.assertEqual([finding[2] for finding in _drc_report(report)], ["clearance"])
 
 
 if __name__ == "__main__":

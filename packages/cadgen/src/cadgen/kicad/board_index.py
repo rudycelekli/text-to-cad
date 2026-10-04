@@ -110,6 +110,9 @@ class Pad:
     at: XY
     polygon: tuple[XY, ...]
     drill: float | None = None  # a through-hole pad's hole, its smaller size
+    # How many of the part's pads share this number: a connector's shell, a tab, a thermal pad's
+    # islands are one pin of several pads. ``#J1.SH`` names them all; ``Part.pads_numbered`` lists them.
+    shared: int = 1
 
     kind = "pad"
 
@@ -120,7 +123,9 @@ class Pad:
 
     def __repr__(self) -> str:
         name = f" ({self.name})" if self.name and self.name != self.number else ""
-        return f"Pad({self.part}.{self.number}{name}, net={self.net!r}, at={_xy(self.at)}, {self.side})"
+        shared = (f"; one of {self.shared} pads numbered {self.number}: "
+                  f"part.pads_numbered({self.number!r}) lists them") if self.shared > 1 else ""
+        return f"Pad({self.part}.{self.number}{name}, net={self.net!r}, at={_xy(self.at)}, {self.side}{shared})"
 
 
 @dataclass(frozen=True)
@@ -150,8 +155,15 @@ class Part:
     def selector(self) -> str | None:
         return _selector("part", ref=self.ref)
 
+    def pads_numbered(self, number: str) -> tuple[Pad, ...]:
+        """Every pad of the part numbered ``number``: one, or the several a shell or a tab has."""
+        found = tuple(pad for pad in self.pads if pad.number == str(number))
+        if not found:
+            self.pad(number)  # raises, naming the numbers there are
+        return found
+
     def pad(self, number: str) -> Pad:
-        """The part's pad ``number`` (the first, when several share it)."""
+        """The part's pad ``number`` (the first, when several share it: see :meth:`pads_numbered`)."""
         for pad in self.pads:
             if pad.number == str(number):
                 return pad
@@ -1014,9 +1026,17 @@ def _read_footprint(node: list, table, copper: Sequence[str], uuids: dict) -> tu
         fields=fields,
         dnp=dnp,
         outline=tuple(outline),
-        pads=tuple(pads),
+        pads=_counted(pads),
     )
     return part, holes, zones, edges
+
+
+def _counted(pads: list[Pad]) -> tuple[Pad, ...]:
+    """``pads``, each knowing how many of them share its number."""
+    counts: dict[str, int] = {}
+    for pad in pads:
+        counts[pad.number] = counts.get(pad.number, 0) + 1
+    return tuple(replace(pad, shared=counts[pad.number]) if counts[pad.number] > 1 else pad for pad in pads)
 
 
 def _outline(items: list[tuple[list[XY], bool]]) -> list[XY]:

@@ -229,13 +229,22 @@ def _calibration(svg: str, at: tuple[float, float]) -> tuple[float, float]:
     return round(at[0] - x, 4), round(at[1] - y, 4)
 
 
+# Checks about where a footprint came from: the plot's DRC runs on a staged copy without the
+# person's library tables, so KiCad would report every footprint of a board drawn in KiCad as
+# missing from its library -- a finding about the plot's sandbox, not about the board.
+_LIBRARY_CHECKS = frozenset({"lib_footprint_issues", "lib_footprint_mismatch"})
+
+
 def _drc_report(report: Path) -> list[tuple]:
     """A DRC report's findings, each once, in KiCad's order: (check, severity, type,
-    description, ((text, uuid, (x, y) | None), ...)) in KiCad's frame."""
+    description, ((text, uuid, (x, y) | None), ...)) in KiCad's frame. Library checks are left
+    out (:data:`_LIBRARY_CHECKS`)."""
     data = json.loads(Path(report).read_text(encoding="utf-8"))
     found: list[tuple] = []
     for key, check in (("violations", "drc"), ("unconnected_items", "unconnected"), ("schematic_parity", "parity")):
         for violation in data.get(key, []) or []:
+            if str(violation.get("type", "")) in _LIBRARY_CHECKS:
+                continue
             items = []
             for item in violation.get("items", []) or []:
                 position = item.get("pos")

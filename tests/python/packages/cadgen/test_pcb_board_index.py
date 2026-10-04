@@ -239,6 +239,25 @@ class OlderBoardTest(unittest.TestCase):
         # Pad 1 at (-1, 0) of a footprint turned a quarter turn lands 1 mm below it (y down).
         self.assertTrue(math.isclose(part.pads[0].at[0], 110, abs_tol=1e-9) and math.isclose(part.pads[0].at[1], 91, abs_tol=1e-9))
 
+    def test_a_number_several_pads_share_names_them_all(self) -> None:
+        # A shell's or a tab's pads share one number: one pin of several pads, which the agent sees.
+        text = """(kicad_pcb (version 20260206) (generator "pcbnew")
+          (layers (0 "F.Cu" signal) (2 "B.Cu" signal) (25 "Edge.Cuts" user))
+          (setup (aux_axis_origin 100 100))
+          (footprint "Lib:Shell" (layer "F.Cu") (at 110 90)
+            (property "Reference" "J1" (at 0 0 0) (layer "F.SilkS"))
+            (pad "SH" thru_hole oval (at -4 0) (size 1 2) (drill 0.6) (layers "*.Cu") (net "GND"))
+            (pad "SH" thru_hole oval (at 4 0) (size 1 2) (drill 0.6) (layers "*.Cu") (net "GND"))
+            (pad "1" smd rect (at 0 0) (size 1 1) (layers "F.Cu") (net "VBUS"))))"""
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "shell.kicad_pcb"
+            path.write_text(text, encoding="utf-8")
+            board = read_board(path)
+            shell = board.resolve("#J1.SH")
+            self.assertIn("one of 2 pads numbered SH", repr(shell))
+            self.assertEqual([pad.at for pad in board.part("J1").pads_numbered("SH")], [(6.0, 10.0), (14.0, 10.0)])
+            self.assertEqual(board.resolve("#J1.1").shared, 1)
+
     def test_a_kicad_5_board_reads_its_modules_and_arcs(self) -> None:
         # KiCad 5 wrote a footprint as a module, and an arc as its centre, its start and an angle:
         # this outline's right side bulges out from (110, 80) round (120, 90) to (110, 100).

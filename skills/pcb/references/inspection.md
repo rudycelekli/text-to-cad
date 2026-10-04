@@ -13,9 +13,9 @@ and several selectors share one `#`, comma-joined: `PCB/servo.kicad_pcb#U3,C14.2
 
 | Selector | Names |
 | --- | --- |
-| `#U3` | a part, by its reference designator |
+| `#U3`, `#J2-J4`, `#_U1` | a part, by its reference designator (a letter or `_`, then letters, digits, `_`, `+` or `-`) |
 | `#U3.9`, `#J4.A4`, `#U2.EP` | a pad of a part, numbered as KiCad numbers it |
-| `#net:VIN`, `#net:TX/RX`, `#net:"a b"` | a net, by the name KiCad shows; quoted when it holds whitespace, a quote, a comma, `@` or `#` |
+| `#net:VIN`, `#net:TX/RX`, `#net:"/Power Stage/VLOC"` | a net, by the name KiCad shows; quoted when it holds whitespace (a hierarchical sheet's name puts one in its nets), a quote, a comma, `@` or `#` |
 | `#net:VIN@x57.6y21.6` | that net's copper (a track, via, pour or pad) at a point |
 | `#@x3.5y3.5` | a point on the board |
 
@@ -44,8 +44,9 @@ board.at(12, 8)                                     # what is at a point
 A file before the `#` must name the board you read; a reference to another file is refused,
 as are a part, pad or net the board does not have (the message lists what it does have) and
 copper nowhere near the point (it names the nearest). A number several pads share (a USB
-connector's four `SH` shield pads, a regulator's tab and pin both `2`) resolves to the first of
-them; `part.pads` lists every one, and the person's point, when they gave one, says which. A reference names the board as it was
+connector's four `SH` shield pads, a regulator's tab and pin both `2`) names them all: it
+resolves to the first, whose repr says how many share it, and `part.pads_numbered("SH")` lists
+every one; the person's point, when they gave one, says which. A reference names the board as it was
 when the person picked: if you have rebuilt since, resolve against the new board and check it
 still names what they meant.
 
