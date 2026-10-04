@@ -68,13 +68,18 @@ export function usePlotView({ plot, restored = null, colorScheme = "light", onVi
     };
   }, [plot, requestPaint, drawViewKey]);
 
-  /** The framed view as a PNG, drawn at its own scale first: a capture never waits on a rest. */
-  const capture = useCallback(() => {
+  /** Paint the frame final now: the view drawn at its own scale, not a patch scaled while it rests. */
+  const settle = useCallback(() => {
     paintNow();
     rastersRef.current?.flush();
     paintNow();
+  }, [paintNow]);
+
+  /** The framed view as a PNG, drawn at its own scale first: a capture never waits on a rest. */
+  const capture = useCallback(() => {
+    settle();
     return view.capture();
-  }, [paintNow, view.capture]);
+  }, [settle, view.capture]);
 
   /**
    * The plot on its own, for a library card: fitted whole to `width` × `height`, each sheet's SVG
@@ -102,6 +107,6 @@ export function usePlotView({ plot, restored = null, colorScheme = "light", onVi
 
   return {
     containerRef, canvasRef: view.canvasRef, dragging: view.dragging, fit: view.fit, capture, thumbnail,
-    transformRef: view.transformRef, requestPaint, paintNow, zoomBy: view.zoomBy, setView: view.setView
+    transformRef: view.transformRef, requestPaint, paintNow, settle, zoomBy: view.zoomBy, setView: view.setView
   };
 }

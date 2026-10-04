@@ -28,6 +28,8 @@ vi.mock('@text-to-cad/core/lib/plot2d/index.js', async (importOriginal) => {
 
 const noop = () => {};
 const copied: string[] = [];
+// A clipboard that refuses, as a browser does without the page's focus.
+let refuseCopy: Error | null = null;
 // A 40 x 30 mm board's index, in sheet millimetres (y down), its script origin at sheet (5, 25).
 const square = (cx: number, cy: number, w: number, h: number) => [[cx - w / 2, cy - h / 2], [cx + w / 2, cy - h / 2], [cx + w / 2, cy + h / 2], [cx - w / 2, cy + h / 2]];
 const INDEX = {
@@ -71,13 +73,14 @@ const SCHEMATIC_INDEX = {
 };
 const json = (body: unknown, status = 200) => new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json' } });
 const INSTALL = "KiCad's command line, kicad-cli, was not found: install KiCad 10 from https://www.kicad.org/download/.";
-let readPlot: (file: string) => Response = () => json(BOARD);
+let readPlot: (file: string) => Response | Promise<Response> = () => json(BOARD);
 const DESTINATION = { kind: 'clipboard', available: true };
 const context2d = new Proxy({}, { get: (_target, key) => (key === 'canvas' ? undefined : noop), set: () => true });
 
 beforeEach(() => {
   frames.length = 0;
   copied.length = 0;
+  refuseCopy = null;
   readPlot = (file) => (file.endsWith('.kicad_sch') ? json(SCHEMATIC) : file.endsWith('.harness.yml') ? json(HARNESS) : json(BOARD));
   vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => setTimeout(() => callback(performance.now()), 0));
   vi.stubGlobal('cancelAnimationFrame', (handle: number) => clearTimeout(handle));
@@ -117,7 +120,7 @@ async function open(file: string, { strict = false } = {}) {
       list: async () => [{ path: file, name: file, kind: 'file' }] },
     navigation: { openFile: noop },
     environment: { colorScheme: 'light' },
-    clipboard: { writeText: async (text: string | Promise<string>) => { copied.push(await text); }, readText: async () => '', writeImage: async () => {} },
+    clipboard: { writeText: async (text: string | Promise<string>) => { if (refuseCopy) throw refuseCopy; copied.push(await text); }, readText: async () => '', writeImage: async () => {} },
     promptContext: { getSnapshot: () => DESTINATION, subscribe: () => noop, deliver: async () => ({ status: 'copied', partIds: [] }) }
   };
   function Pane() {
@@ -220,6 +223,35 @@ it('a board with its index has Select and Measure, its parts and nets, and hands
   await act(async () => { inPane.getByRole('button', { name: 'Copy' }).click(); });
   await waitFor(() => expect(copied).toEqual(['blinky.kicad_pcb#R1']));
   dispose();
+});
+
+it('a copy the clipboard refuses says it was a copy that failed, and why', async () => {
+  readPlot = (file) => (file.endsWith('.kicad_pcb') ? json({ ...BOARD, board: INDEX }) : json(SCHEMATIC));
+  const { pane, dispose } = await open('blinky.kicad_pcb');
+  await opened(pane);
+  const inPane = within(pane);
+  await act(async () => { inPane.getByRole('button', { name: 'Expand Resistors' }).click(); });
+  await act(async () => { inPane.getByRole('button', { name: 'Select R1' }).click(); });
+  refuseCopy = new Error('Document is not focused.');
+  await act(async () => { inPane.getByRole('button', { name: 'Copy' }).click(); });
+  const alert = await inPane.findByRole('alert');
+  expect(alert.textContent).toContain('Couldn’t copy from the board');
+  expect(alert.textContent).toContain('Document is not focused.');
+  expect(alert.textContent).not.toContain('capture');
+  dispose();
+});
+
+it('a board still loading tells a host selecting on it to wait, not that it has nothing to select', async () => {
+  let release: (response: Response) => void = noop;
+  readPlot = () => new Promise<Response>((resolve) => { release = resolve; });
+  const view = await open('blinky.kicad_pcb');
+  const controller = await waitFor(() => { expect(view.controller).not.toBeNull(); return view.controller; });
+  await expect(controller.select({ selectors: ['#R1'] })).rejects.toThrow(/Wait for the displayed model revision to finish loading/);
+  await act(async () => { release(json({ ...BOARD, board: INDEX })); });
+  await opened(view.pane);
+  const state = await view.controller.select({ selectors: ['#R1'] });
+  expect(state.selection[0].target.selectors).toEqual(['#R1']);
+  view.dispose();
 });
 
 it('the live controller selects board references, reads them back, and refuses what the board lacks', async () => {

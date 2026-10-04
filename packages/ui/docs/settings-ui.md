@@ -258,21 +258,23 @@ plot without one is the picture alone.
 - **The Reference** is headed by the pick as a person names it (`C14 · 100n`,
   `U3 · pad 9 VBUS`, `net VIN`, `VIN · track`) and reads it back in the script's millimetres
   (y up, from the board's drill/place origin): a part's footprint, side, position, rotation,
-  pads, MPN and LCSC fields and the script line that made it (`Script`); a pad's net, pin,
-  type and side; a net's class, pads, parts, tracks and their length, vias and pours; copper's
-  layer, width or drill. Its **Copy** (**Copy All**) writes the references with the file's
-  prefix, as the copy key does.
+  pads, the script line that made it (`Script`), then its MPN, manufacturer, LCSC and
+  description fields; a pad's net, pin, type, side and position; a net's class, pads, parts,
+  tracks and their length, vias and pours; copper's layer, width or drill. Its **Copy**
+  (**Copy All**) writes the references with the file's prefix, as the copy key does; a copy the
+  host refuses is the alert card "Couldn’t copy from the board".
 - **References** are board references, the language `cadgen.pcb.read_board(path).resolve(ref)`
   reads: `#U3`, `#U3.9`, `#net:VIN`, `#net:VIN@x40.1y21.6` (that net's copper at a point) and
   `#@x40.1y21.6` (a point). Quick Edit carries them as it carries a STEP's.
 - **Measure** snaps as its mode menu says: **All**, **Pads** (pad centres), **Vias and
   tracks** (via centres and track ends) and **Edges and holes**. Each measurement is a row:
   its distance and what its two ends were, dx and dy on hover. It is kept, toggled and cleared
-  as a STEP's Measure is.
+  as a STEP's Measure is, Escape included; a second press on its first point (a double-click's)
+  measures nothing.
 - **Draw** is the shared drawing editor laid over the board, its Drawing panel and Copy Drawing
   as a STEP's. While it is up the editor pans and zooms and the board follows it
-  (`board/boardViewLock.js`), so ink stays on what it was drawn over; the sketch goes with a
-  Quick Edit as the view with its ink.
+  (`board/boardViewLock.js`), so ink stays on what it was drawn over — through a change of the
+  pane's size too; the sketch goes with a Quick Edit as the view with its ink.
 - **Display** (the navbar's Settings, one **Board** section): **View from** Top or Bottom (the
   board mirrored, its bottom layers drawn over its top), **Layers** (All layers, Copper,
   Silkscreen and fab) and **Copper pours** on or off — a pour hides the tracks under it. KiCad
@@ -704,7 +706,8 @@ pressed in while focus is on the page. Editable targets keep their own keys.
   a color picker, the Display popover) closes itself; then preview exits;
   then Draw's canvas spends its own Escape; then the renderer's (STEP: an
   unfinished measurement, then the Measure tool, then the selection, then
-  isolation; robots: the selection). The tool stack's panels and the host's
+  isolation; a KiCad board: an unfinished measurement, then the Measure tool,
+  then the selection; robots and a KiCad schematic: the selection). The tool stack's panels and the host's
   explorer are never Escape's to close (a phone's sheet is dismissed like any sheet).
 - **A panel's grip** (its bottom-right corner) is a separator in the tab
   order: Left/Right nudge its width and Up/Down its cap by 16px, and Home and

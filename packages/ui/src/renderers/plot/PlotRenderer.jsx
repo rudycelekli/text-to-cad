@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { cn } from "@text-to-cad/ui/utils";
-import { parseBoardRefSelector } from "@text-to-cad/core/lib/boardRefs.js";
+import { parseBoardRefSelector, splitBoardRefSelectors } from "@text-to-cad/core/lib/boardRefs.js";
 import { usePromptDestination, useViewerHost } from "../../host/context.js";
 import { useViewerMobile } from "../../file-viewer/responsive.js";
 import { FILE_PANEL_TREE } from "../../file-viewer/navigation/panels.js";
@@ -73,6 +73,7 @@ function PlotSurface({ view, data }) {
   const file = workspace.entry?.file || view.file.path;
   const payload = usePlotPayload({ client: workspace.client, file, revision: workspace.resource.revision });
   const words = plotWords(payload.plot?.layout.kind || plotKindForPath(view.file.path));
+  // A failed action's card: its title says which action failed (a copy, a capture), its message why.
   const [actionError, setActionError] = useState(null);
   const [displayOpen, setDisplayOpen] = useState(false);
   const { onReady, onStateChange } = view;
@@ -136,7 +137,8 @@ function PlotSurface({ view, data }) {
   const { canvasRef, capture, containerRef, dragging, fit, thumbnail } = plotView;
   viewParts.current = { transformRef: plotView.transformRef, requestPaint: plotView.requestPaint, canvasRef };
   const drawing = inspector.available && inspector.tool === BOARD_TOOL.DRAW;
-  const boardDrawing = useBoardDrawing({ active: drawing, transformRef: plotView.transformRef, setView: plotView.setView, canvasRef });
+  const boardDrawing = useBoardDrawing({ active: drawing, transformRef: plotView.transformRef, setView: plotView.setView, paintNow: plotView.paintNow,
+    settle: plotView.settle, canvasRef });
 
   // ---- host chrome -----------------------------------------------------------
   useEffect(() => { onReady?.(true); }, [onReady]);
@@ -165,8 +167,15 @@ function PlotSurface({ view, data }) {
   const copySelection = useCallback(async (selectors = inspector.selection) => {
     const text = inspector.copyText(referencePath(file), selectors);
     if (!text) return false;
-    try { await host.clipboard.writeText(text); return true; } catch (error) { setActionError(error instanceof Error ? error.message : String(error)); return false; }
-  }, [inspector, referencePath, file, host.clipboard]);
+    try {
+      await host.clipboard.writeText(text);
+      setActionError((current) => (current?.title === words.copyFailed ? null : current));
+      return true;
+    } catch (error) {
+      setActionError({ title: words.copyFailed, message: error instanceof Error ? error.message : String(error) });
+      return false;
+    }
+  }, [inspector, referencePath, file, host.clipboard, words]);
   inspector.copyRef.current = copySelection;
   // What is selected, in the prompt grammar: the references a Quick Edit attaches.
   const references = useMemo(() => (inspector.selection.length
@@ -176,15 +185,23 @@ function PlotSurface({ view, data }) {
   // Draw's copy: the view with its ink, to the clipboard.
   const copyDrawing = useCallback(async () => {
     if (!boardDrawing.drawing.hasContent) return false;
-    try { await host.clipboard.writeImage(boardDrawing.capture()); return true; } catch (error) { setActionError(error instanceof Error ? error.message : String(error)); return false; }
-  }, [boardDrawing, host.clipboard]);
+    try {
+      await host.clipboard.writeImage(boardDrawing.capture());
+      setActionError((current) => (current?.title === words.copyFailed ? null : current));
+      return true;
+    } catch (error) {
+      setActionError({ title: words.copyFailed, message: error instanceof Error ? error.message : String(error) });
+      return false;
+    }
+  }, [boardDrawing, host.clipboard, words]);
   const copyAction = () => {
     if (drawing && boardDrawing.drawing.hasContent) { void copyDrawing(); return true; }
     if (inspector.selection.length) { void copySelection(); return true; }
     return false;
   };
   useViewerShortcuts({
-    viewerElement: rootRef, escapeActive: inspector.available && Boolean(inspector.selection.length || inspector.measureStart || inspector.finding),
+    viewerElement: rootRef,
+    escapeActive: inspector.available && Boolean(inspector.selection.length || inspector.measureStart || inspector.finding || inspector.tool === BOARD_TOOL.MEASURE),
     onEscape: () => { inspector.escape(); }, onCopy: inspector.available ? copyAction : undefined
   });
   const toolStack = useMemo(() => normalizeToolStack(workspace.services.preferences?.toolStack), [workspace.services.preferences?.toolStack]);
@@ -224,8 +241,11 @@ function PlotSurface({ view, data }) {
     catch (error) { pending = Promise.reject(error); }
     Promise.resolve(pending)
       .catch((error) => ({ status: "failed", message: error instanceof Error ? error.message : String(error) }))
-      .then((result) => setActionError(promptDeliveryError(result)));
-  }, [capture, host.promptContext]);
+      .then((result) => {
+        const message = promptDeliveryError(result);
+        setActionError(message ? { title: words.captureFailed, message } : null);
+      });
+  }, [capture, host.promptContext, words]);
 
   // A host's own capture request is the same act, acknowledged.
   const snapshotRef = useRef(snapshot);
@@ -246,7 +266,7 @@ function PlotSurface({ view, data }) {
   const handledSelect = useRef(null);
   useEffect(() => {
     if (selectKey === null || handledSelect.current === selectKey) return;
-    const selectors = String(selectRequest?.selector || "").split(",").map((selector) => selector.trim()).filter(Boolean);
+    const selectors = splitBoardRefSelectors(selectRequest?.selector);
     if (inspector.available && selectors.length && selectors.every((selector) => parseBoardRefSelector(selector))) {
       inspector.select(selectors);
     } else if (!ready && payload.loading) return;
@@ -255,6 +275,9 @@ function PlotSurface({ view, data }) {
   }, [selectKey, selectRequest, inspector, ready, payload.loading, workspace.acknowledgeCommand]);
 
   // ---- the live command surface ----------------------------------------------
+  // A KiCad document answers select and clearSelection from the start: while it loads, the binding
+  // says to wait; once on screen, by its index — or, read without one, in words.
+  const kicad = isBoardFile || plotKindForPath(view.file.path) === "schematic";
   const runtimeRef = useRef(null);
   runtimeRef.current = {
     readState: () => ({
@@ -264,10 +287,11 @@ function PlotSurface({ view, data }) {
     }),
     // A board or a schematic selects by board references (`#U3`, `#U3.9`, `#net:VIN`): an agent
     // pointing at what it changed.
-    ...(inspector.available ? {
+    ...(kicad ? {
       select(request) {
+        if (!inspector.available) throw new Error(words.declined.select);
         const raw = Array.isArray(request) ? request : Array.isArray(request?.selectors) ? request.selectors : [request?.selector ?? request];
-        const list = raw.flatMap((selector) => String(selector ?? "").split(",")).map((selector) => selector.trim()).filter(Boolean);
+        const list = raw.flatMap((selector) => splitBoardRefSelectors(selector));
         const unknown = list.filter((selector) => !parseBoardRefSelector(selector) || !inspector.index.resolve(selector));
         if (unknown.length) {
           throw new Error(onBoard
@@ -276,7 +300,10 @@ function PlotSurface({ view, data }) {
         }
         inspector.select(list);
       },
-      clearSelection() { inspector.clear(); },
+      clearSelection() {
+        if (!inspector.available) throw new Error(words.declined.clearSelection);
+        inspector.clear();
+      },
     } : {}),
     setCamera() { throw new Error(words.noCamera); },
     resetCamera() { fit(); },
@@ -288,16 +315,16 @@ function PlotSurface({ view, data }) {
   // A plot has settled once it is read and decoded: a library card's picture waits for that.
   const whenSettled = useWhenSettled(() => ready);
   // The card the viewport shows, and its dismissal: put away, its icon in the navbar brings it back.
-  const cardAlert = alert || (actionError ? { severity: "error", kind: "status", blocking: false, title: words.captureFailed, message: actionError } : null);
+  const cardAlert = alert || (actionError ? { severity: "error", kind: "status", blocking: false, title: actionError.title, message: actionError.message } : null);
   const alertDismissal = useAlertDismissal(cardAlert, { hasContent: shown, scope: file, onNavigationActionsChange: view.onNavigationActionsChange });
   const binding = data.services.live;
-  // A board or a schematic with its index answers select and clearSelection itself; a harness still declines them.
+  // A board or a schematic answers select and clearSelection itself; a harness declines them.
   const declined = useMemo(() => {
-    if (!inspector.available) return words.declined;
+    if (!kicad) return words.declined;
     const { select: _select, clearSelection: _clear, ...rest } = words.declined;
     return rest;
-  }, [inspector.available, words.declined]);
-  const liveCommands = useMemo(() => (inspector.available ? ["select", "clearSelection"] : []), [inspector.available]);
+  }, [kicad, words.declined]);
+  const liveCommands = useMemo(() => (kicad ? ["select", "clearSelection"] : []), [kicad]);
   useEffect(() => {
     if (!binding) return undefined;
     return attachLiveBinding(binding, () => runtimeRef.current, { declined, ready: whenSettled, commands: liveCommands });
@@ -335,7 +362,9 @@ function PlotSurface({ view, data }) {
             footer={boardDrawing.drawing.hasContent ? <ToolPanelFooterButton label="Copy Drawing" shortcut={mobile ? "" : copyShortcut} onClick={copyDrawing} /> : null}>
             <DrawingToolbar drawing={boardDrawing.drawing} layout="panel" className="p-1" />
           </ToolPanel> : null}
-          <BoardTreePanel inspector={inspector} active={inspector.tool === BOARD_TOOL.SELECT} />
+          <BoardTreePanel index={inspector.index} documentKind={inspector.document} selection={inspector.selection} focusedFinding={inspector.focusedFinding}
+            selectMode={inspector.selectMode} onSelectMode={inspector.setSelectMode} select={inspector.select} clear={inspector.clear}
+            active={inspector.tool === BOARD_TOOL.SELECT} />
           <BoardReferencePanel inspector={inspector} active={inspector.tool === BOARD_TOOL.SELECT} onCopy={() => copySelection()} copyShortcut={mobile ? "" : copyShortcut} />
           <BoardMeasurePanel inspector={inspector} shown={inspector.tool === BOARD_TOOL.MEASURE || inspector.measurements.length > 0}
             onClose={() => { inspector.clearMeasure(); if (inspector.tool === BOARD_TOOL.MEASURE) inspector.chooseTool(BOARD_TOOL.SELECT); }} />

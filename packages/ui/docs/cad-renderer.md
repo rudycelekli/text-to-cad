@@ -364,15 +364,21 @@ STEP or GLB its model exports, which are files of their own.
 
 - **A board's or a schematic's index** (`@text-to-cad/core/lib/board2d`):
   `createBoardIndex(payload.board)` and `createSchematicIndex(payload.schematic, layout.sheets)`
-  pick what is under a page point by Select's mode (on a board, by the side looked at too),
-  resolve a reference back to what it names, and on a board find what Measure snaps to;
+  pick what is under a page point by Select's mode (on a board, by the side looked at too; past
+  copper on no net to what lies under it), resolve a reference back to what it names, and on a
+  board find what Measure snaps to. The viewer picks on every pointer move, so what is near a
+  point is found through a grid of the page (`board2d/spatialGrid.js`), never a scan of the
+  board: tens of thousands of pads and tracks answer in microseconds.
   `drawBoardOverlay` draws the hover, the selection, a measurement and a check's markers over
-  the plot, in the frame's own paint, so a capture shows them. Pure: the viewer runs it on every
-  pointer move.
-- **Host commands**: on a board or a schematic with its index, `select` takes board references
-  (`#U3`, `#U3.9`, `#net:VIN`; points only on a board) and refuses one the document lacks;
-  `clearSelection` clears; `readState().selection` is the selection in the prompt grammar; a
-  host's `selectReference` selects. A harness still declines them, in words.
+  the plot, in the frame's own paint, so a capture shows them: shapes in page space under the
+  canvas's transform (the bottom view's mirror in it), each item from a path kept with it, what
+  is off screen left out — a net of thousands of pads is a few milliseconds a frame.
+- **Host commands**: on a board or a schematic, `select` takes board references (`#U3`,
+  `#U3.9`, `#net:VIN`; points only on a board; several comma-joined, split outside quotes) and
+  refuses one the document lacks; `clearSelection` clears; `readState().selection` is the
+  selection in the prompt grammar; a host's `selectReference` selects. While the document loads a
+  host is told to wait, as for any model; one read without its index declines them in words, as a
+  harness always does.
 
 - **The picture is KiCad's.** `client.plotPayload(file)` is one `GET /__cad/plot`
   (`apps/web/docs/backend.md`): `kicad-cli` plots the document to SVG on the server — a
@@ -420,11 +426,15 @@ STEP or GLB its model exports, which are files of their own.
 - **Fixtures and tests**: `plot/__fixtures__` holds hand-made payloads in KiCad's and
   WireViz's shape.
   `PlotRenderer.browser.test.mjs` asserts on pixels — the fit, the board's background, a
-  track's thickness and its sharp edge at 400%, a schematic's stacked sheets, the theme's
-  surround, a harness's Graphviz sheet, an untainted capture, a library card's picture, the
-  view kept on reopening, the missing-KiCad card; `PlotRenderer.test.tsx` the states, the
-  declined commands (a harness's in WireViz's name) and the StrictMode remount;
-  `plotRasters.test.js` the patches.
+  track's thickness and its sharp edge at 400%, a press on a pad's pixels selecting that pad and
+  lighting them (and its mirrored place from the bottom), a schematic's stacked sheets, the
+  theme's surround, a harness's Graphviz sheet, an untainted capture, a library card's picture,
+  the view kept on reopening, the missing-KiCad card; `PlotRenderer.test.tsx` the states, the
+  board's and schematic's tools and live commands, the declined commands (a harness's in
+  WireViz's name) and the StrictMode remount; `board/useBoardInspector.test.tsx` the tools'
+  transitions (Escape, Measure, a check across revisions), `board/useBoardDrawing.test.tsx` the
+  sketch kept on the board through a resize; `plotRasters.test.js` the patches; core's
+  `board2d` tests a pick and a snap against a scan of the whole board.
 
 ## GLB renderer
 
@@ -1361,7 +1371,8 @@ effects pass reports whether a style, visibility or highlight changed
 
 Draw is the shared [drawing editor](drawing.md) (Excalidraw) laid transparently
 over the viewport. It is a STEP tool, and a KiCad board's (over its flat picture, which
-follows the editor's pan and zoom: `plot/board/boardViewLock.js`); a GLB, an STL, a 3MF, a
+follows the editor's pan and zoom, and is put back under the ink when the pane changes size:
+`plot/board/boardViewLock.js`); a GLB, an STL, a 3MF, a
 DXF, a KiCad schematic, a wiring harness and a robot description do not offer it. (The tool itself is
 the SHELL's — `kit/tools/draw`, `shell.tools.draw` — and STEP is the renderer that
 puts it on its strip; `renderers/shell-harness` also mounts it, for tests.) The

@@ -45,6 +45,8 @@ function wordsFor({ noun, tool }) {
     updateStatus: Object.freeze({ pending: true, label: `Updating ${noun}…` }),
     openFailed: `Couldn’t open the ${noun}`,
     captureFailed: `Couldn’t capture the ${noun}`,
+    /** A copy to the clipboard (references, or a drawing) that the host refused. */
+    copyFailed: `Couldn’t copy from the ${noun}`,
     remains: `The existing ${noun} remains visible.`,
     /** Host commands a flat picture cannot answer, each with the sentence its caller reads. */
     declined: Object.freeze({

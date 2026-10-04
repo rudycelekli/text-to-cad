@@ -13,7 +13,8 @@
  * a stream of wheel ticks; re-rendering a component tree per event would make both stutter and
  * would tell React about a number only the canvas cares about. The component re-renders when
  * something it actually shows changes — whether a drag is in progress, so the cursor can say so —
- * and never per frame.
+ * and never per frame. A press that stays a tap is no drag: it re-renders nothing here, which on
+ * a board whose panels hold thousands of rows is most of what a click costs.
  *
  * Painting is on demand: one `requestAnimationFrame` is scheduled when something changed, and an
  * idle picture paints nothing at all. A resize is the exception: resizing the canvas wipes it, so
@@ -261,7 +262,6 @@ export function usePlaneView({ content, bounds, restored = null, colorScheme = "
       pointers.set(event.pointerId, point);
       press = pointers.size === 1 ? { id: event.pointerId, x: point.x, y: point.y } : null;
       if (pointers.size === 2) measurePinch();
-      if (pointers.size === 1) setDragging(true);
       event.preventDefault();
     };
     const onPointerMove = (event) => {
@@ -272,6 +272,8 @@ export function usePlaneView({ content, bounds, restored = null, colorScheme = "
       }
       const point = local(event);
       if (press && Math.hypot(point.x - press.x, point.y - press.y) > TAP_SLOP_PX) press = null;
+      // No longer a tap: a drag, or a pinch, and the cursor says so.
+      if (!press) setDragging(true);
       pointers.set(event.pointerId, point);
       const transform = transformRef.current;
       if (!transform) return;

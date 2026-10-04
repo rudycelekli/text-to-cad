@@ -5,6 +5,7 @@
  * `#U3.9` finds — and `searchAliases`), plus the selector the row selects (`selector`) and a muted
  * `detail`.
  */
+import { formatBoardRefSelector, parseBoardRefSelector } from "@text-to-cad/core/lib/boardRefs.js";
 
 // KiCad's reference prefixes, read as what the parts are. A prefix not here is "Other".
 const KINDS = Object.freeze([
@@ -19,8 +20,11 @@ const KIND_BY_PREFIX = new Map(KINDS);
 const KIND_ORDER = [...new Set(KINDS.map(([, kind]) => kind)), "Other"];
 
 const prefixOf = (ref) => (/^[A-Za-z]+/.exec(ref)?.[0] || "").toUpperCase();
+// One collator for every comparison: `localeCompare` with options builds a collator per call, which
+// on a board of thousands of parts and pads is most of the tree's cost.
+const NATURAL = new Intl.Collator(undefined, { numeric: true, sensitivity: "base" });
 /** Natural order: C2 before C10. */
-export const naturalCompare = (left, right) => String(left).localeCompare(String(right), undefined, { numeric: true, sensitivity: "base" });
+export const naturalCompare = (left, right) => NATURAL.compare(String(left), String(right));
 
 /** The kind a reference designator says a part is ("Capacitors" for C14). */
 export function partKind(ref) {
@@ -67,9 +71,9 @@ export function buildBoardTree(index) {
     .filter((net) => !net.name.startsWith("unconnected-("))
     .sort((a, b) => naturalCompare(a.name, b.name))
     .map((net) => ({
-      id: `net:${net.name}`, kind: "net", selector: formatNetSelector(net.name), label: net.name,
+      id: `net:${net.name}`, kind: "net", selector: formatBoardRefSelector({ kind: "net", net: net.name }), label: net.name,
       detail: `${net.pads.length} ${noun}${net.pads.length === 1 ? "" : "s"}`, selectionId: `net:${net.name}`, searchAliases: [],
-      children: [...net.pads].sort((a, b) => naturalCompare(`${a.ref}.${a.number}`, `${b.ref}.${b.number}`)).map((pad) => padNode(pad, { underNet: true })),
+      children: net.pads.map((pad) => ({ pad, key: `${pad.ref}.${pad.number}` })).sort((a, b) => naturalCompare(a.key, b.key)).map(({ pad }) => padNode(pad, { underNet: true })),
     }));
   const checks = index.findings.map((finding) => ({
     id: `finding:${finding.index}`, kind: "finding", finding, label: finding.type.replaceAll("_", " "),
@@ -93,19 +97,14 @@ export function buildBoardTree(index) {
   return { roots, nodesById, parents };
 }
 
-function formatNetSelector(name) {
-  return /^[^\s"@#,]+$/.test(name) ? `#net:${name}` : `#net:${JSON.stringify(name)}`;
-}
-
 /** The tree rows a selector stands for (a pad or pin shows under its part and under its net). */
 export function boardTreeNodeIds(selector) {
-  const text = String(selector || "").replace(/^#/, "");
-  if (text.startsWith("net:")) {
-    const name = text.slice(4).replace(/@x.*$/, "");
-    return [`net:${name.startsWith('"') ? JSON.parse(name) : name}`];
-  }
-  if (text.startsWith("@")) return [];
-  return text.includes(".") ? [`pad:${text}`, `netpad:${text}`] : [`part:${text}`];
+  const parsed = parseBoardRefSelector(selector);
+  if (!parsed) return [];
+  if (parsed.kind === "net" || parsed.kind === "copper") return [`net:${parsed.net}`];
+  if (parsed.kind === "pad") return [`pad:${parsed.ref}.${parsed.pad}`, `netpad:${parsed.ref}.${parsed.pad}`];
+  if (parsed.kind === "part") return [`part:${parsed.ref}`];
+  return [];
 }
 
 /** The rows above a node, outermost first, to open so the node shows. */

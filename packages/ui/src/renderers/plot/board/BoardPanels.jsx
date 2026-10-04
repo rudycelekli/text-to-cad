@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, X } from "lucide-react";
 import { TreeRowSurface, TreeRowChevron, TreeRowLabel } from "@text-to-cad/ui/primitives/tree-row";
 import { TreeFilterHighlight, TreeFilterInput } from "@text-to-cad/ui/primitives/tree-filter";
@@ -16,24 +16,28 @@ import { boardTreeAncestors, boardTreeNodeIds, buildBoardTree } from "./boardTre
 import { boardFindingFacts, referenceFacts } from "./boardFacts.js";
 
 const EMPTY = Object.freeze([]);
+const NO_IDS = Object.freeze(new Set());
 // What the panels call the document they list.
 const nounOf = (inspector) => (inspector.document === "schematic" ? "Schematic" : "Board");
 
-function rowActions(node, inspector) {
+function rowActions(node, select) {
   return {
     choose(event) {
       const add = event.ctrlKey || event.metaKey || event.shiftKey;
-      if (node.kind === "finding") inspector.select(node.finding.items.map((item) => item.ref).filter(Boolean), { finding: node.finding.index });
-      else if (node.selector) inspector.select([node.selector], { add });
+      if (node.kind === "finding") select(node.finding.items.map((item) => item.ref).filter(Boolean), { finding: node.finding.index });
+      else if (node.selector) select([node.selector], { add });
     },
   };
 }
 
 // A row of the board tree: a group (Parts, a kind, Nets, Checks), a part, a net, a pad or a check.
-function BoardRow({ node, depth, highlighted, expanded, toggle, inspector, rowRefs }) {
+// A board's Nets can be thousands of rows: a row renders again only when it, or a row under it,
+// changed (`dirty`: the rows whose highlight or opening changed, and their owners).
+// (Named apart from the memo it is wrapped in, so the rows under it are the memo too.)
+const BoardRow = memo(function BoardTreeRow({ node, depth, highlighted, expanded, dirty, toggle, select, rowRefs }) {
   const branch = node.children.length > 0;
   const open = branch && expanded.has(node.id);
-  const { choose } = rowActions(node, inspector);
+  const { choose } = rowActions(node, select);
   const pickable = node.kind !== "group";
   return <li className="min-w-0" ref={(element) => { if (element) rowRefs.current.set(node.id, element); else rowRefs.current.delete(node.id); }}>
     <TreeRowSurface dense active={highlighted.has(node.id)} className="gap-0 pr-0" style={{ paddingLeft: depth * 12 }} data-board-row={node.id}>
@@ -47,14 +51,15 @@ function BoardRow({ node, depth, highlighted, expanded, toggle, inspector, rowRe
         {node.detail ? <TreeRowLabel className="flex-1 text-micro text-muted-foreground">{node.detail}</TreeRowLabel> : null}
       </button>
     </TreeRowSurface>
-    {open ? <ul>{node.children.map((child) => <BoardRow key={child.id} {...{ node: child, depth: depth + 1, highlighted, expanded, toggle, inspector, rowRefs }} />)}</ul> : null}
+    {open ? <ul>{node.children.map((child) => <BoardRow key={child.id} {...{ node: child, depth: depth + 1, highlighted, expanded, dirty, toggle, select, rowRefs }} />)}</ul> : null}
   </li>;
-}
+}, (before, after) => before.node === after.node && before.depth === after.depth && before.toggle === after.toggle
+  && before.select === after.select && !after.dirty.has(after.node.id));
 
-function BoardSearchRow({ match, highlighted, cursor, inspector }) {
+function BoardSearchRow({ match, highlighted, cursor, select }) {
   const { entry, indices, alias } = match;
   const { node } = entry;
-  const { choose } = rowActions(node, inspector);
+  const { choose } = rowActions(node, select);
   return <li className="min-w-0" data-search-row={node.id}>
     <TreeRowSurface dense active={highlighted.has(node.id)} cursor={cursor} className="gap-0 pr-0">
       <button type="button" aria-label={`Select ${node.label}`} aria-pressed={highlighted.has(node.id)} onClick={choose}
@@ -71,55 +76,69 @@ function BoardSearchRow({ match, highlighted, cursor, inspector }) {
 /**
  * Select's panel on a board or a schematic: its parts by kind, each with its pads or pins; its nets,
  * each with the pads or pins on it; the checks KiCad reported. The filter is the top row, with
- * Select's mode menu and the X.
+ * Select's mode menu and the X. It renders again only for what it shows — the document, the
+ * selection, the check in focus, the mode — not for every render of the view under it.
  */
-export function BoardTreePanel({ inspector, active }) {
-  const noun = nounOf(inspector);
-  const tree = useMemo(() => (inspector.index ? buildBoardTree(inspector.index) : { roots: EMPTY, nodesById: new Map(), parents: new Map() }), [inspector.index]);
+export const BoardTreePanel = memo(function BoardTreePanel({ index, documentKind, selection, focusedFinding, selectMode, onSelectMode, select, clear, active }) {
+  const noun = nounOf({ document: documentKind });
+  const tree = useMemo(() => (index ? buildBoardTree(index) : { roots: EMPTY, nodesById: new Map(), parents: new Map() }), [index]);
   const [expanded, setExpanded] = useState(() => new Set(["group:parts"]));
-  const toggle = (node) => setExpanded((current) => {
+  const toggle = useCallback((node) => setExpanded((current) => {
     const next = new Set(current);
     if (!next.delete(node.id)) next.add(node.id);
     return next;
-  });
+  }), []);
   const highlighted = useMemo(() => {
-    const ids = new Set(inspector.selection.flatMap(boardTreeNodeIds));
-    if (inspector.focusedFinding != null) ids.add(`finding:${inspector.focusedFinding}`);
+    const ids = new Set(selection.flatMap(boardTreeNodeIds));
+    if (focusedFinding != null) ids.add(`finding:${focusedFinding}`);
     return ids;
-  }, [inspector.selection, inspector.focusedFinding]);
+  }, [selection, focusedFinding]);
+  // The rows whose highlight or opening changed since the rows on screen were drawn, with their owners.
+  const drawn = useRef({ tree, highlighted: NO_IDS, expanded: NO_IDS });
+  const dirty = useMemo(() => {
+    const before = drawn.current;
+    const ids = new Set();
+    const mark = (id) => { for (let at = id; at && !ids.has(at); at = tree.parents.get(at)) ids.add(at); };
+    for (const [now, then] of [[highlighted, before.highlighted], [expanded, before.expanded]]) {
+      for (const id of now) if (!then.has(id)) mark(id);
+      for (const id of then) if (!now.has(id)) mark(id);
+    }
+    return ids;
+  }, [tree, highlighted, expanded]);
+  useEffect(() => { drawn.current = { tree, highlighted, expanded }; });
   const { query, searching, deferredQuery, found, cursorId, listRef, changeQuery, onKeyDown } = useTreeSearch(tree.roots);
   const rowRefs = useRef(new Map());
 
   // A pick on the board opens its rows' owners, and the last one scrolls into view, once.
-  const revealKey = JSON.stringify(inspector.selection);
+  const revealKey = JSON.stringify(selection);
   const revealed = useRef("[]");
   useEffect(() => {
-    if (!active || searching || revealed.current === revealKey || !inspector.selection.length) return;
-    const ids = boardTreeNodeIds(inspector.selection.at(-1)).filter((id) => tree.nodesById.has(id));
+    if (!active || searching || revealed.current === revealKey || !selection.length) return;
+    const ids = boardTreeNodeIds(selection.at(-1)).filter((id) => tree.nodesById.has(id));
     if (!ids.length) { revealed.current = revealKey; return; }
     const missing = boardTreeAncestors(tree, ids[0]).filter((id) => !expanded.has(id));
     if (missing.length) { setExpanded((current) => new Set([...current, ...missing])); return; }
     rowRefs.current.get(ids[0])?.scrollIntoView?.({ block: "nearest" });
     revealed.current = revealKey;
-  }, [active, searching, revealKey, inspector.selection, tree, expanded]);
+  }, [active, searching, revealKey, selection, tree, expanded]);
 
   return <ToolPanel id="tree" label={noun} fit="tree" resizable closable collapsible={false} hidden={!active}
     header={<TreeFilterInput dense label={`Filter ${noun.toLowerCase()}`} placeholder="Filter…" yieldWhileTyping value={query} onChange={changeQuery} onKeyDown={onKeyDown}
-      trailing={<><BoardSelectModeMenu mode={inspector.selectMode} onModeChange={inspector.setSelectMode} document={inspector.document || "board"} /><ToolPanelClose /></>} />}>
+      trailing={<><BoardSelectModeMenu mode={selectMode} onModeChange={onSelectMode} document={documentKind || "board"} /><ToolPanelClose /></>} />}>
     <div className="flex flex-col text-tiny" aria-label={`${noun} parts and nets`}>
-      <div ref={listRef} className="px-1 py-1" onClick={(event) => { if (!event.target.closest("li,button,input")) inspector.clear(); }}>
+      <div ref={listRef} className="px-1 py-1" onClick={(event) => { if (!event.target.closest("li,button,input")) clear(); }}>
         {searching ? <p role="status" className="px-2 py-1 text-micro text-muted-foreground">
           {found.total > found.matches.length ? `First ${found.matches.length} of ${found.total.toLocaleString()} matches` : `${found.total} ${found.total === 1 ? "match" : "matches"}`}
         </p> : null}
         {searching
           ? found.matches.length
-            ? <ul aria-label={`${noun} search results`}>{found.matches.map((match) => <BoardSearchRow key={match.entry.node.id} {...{ match, highlighted, cursor: match.entry.node.id === cursorId, inspector }} />)}</ul>
+            ? <ul aria-label={`${noun} search results`}>{found.matches.map((match) => <BoardSearchRow key={match.entry.node.id} {...{ match, highlighted, cursor: match.entry.node.id === cursorId, select }} />)}</ul>
             : deferredQuery.trim() ? <p className="px-3 py-6 text-center text-tiny text-muted-foreground">{`Nothing matches “${deferredQuery.trim()}”`}</p> : null
-          : <ul aria-label={noun}>{tree.roots.map((node) => <BoardRow key={node.id} {...{ node, depth: 0, highlighted, expanded, toggle, inspector, rowRefs }} />)}</ul>}
+          : <ul aria-label={noun}>{tree.roots.map((node) => <BoardRow key={node.id} {...{ node, depth: 0, highlighted, expanded, dirty, toggle, select, rowRefs }} />)}</ul>}
       </div>
     </div>
   </ToolPanel>;
-}
+});
 
 // With several references, the heading is a picker over them and the rows are the browsed one's.
 function ReferencePicker({ items, browsed, onBrowse }) {

@@ -8,6 +8,7 @@ import { createServer } from 'node:http';
 import { build } from 'esbuild';
 import { chromium } from 'playwright';
 import { PNG } from 'pngjs';
+import { fitPlotTransform, layoutPlot, pageToScreen } from '@text-to-cad/core/lib/plot2d/plot.js';
 
 // The plots under test are COMMITTED payloads (see `__fixtures__/README.md`: KiCad's own plot of a
 // small board, hand-made sheets for the schematic and the harness), served as `GET /__cad/plot`
@@ -158,6 +159,40 @@ test('a board opens fitted on its own background, its tracks drawn, and stays sh
     if (!red(value) && !near(value, background, 40)) edge += 1;
   }
   assert.ok(edge <= 4, `a sharp edge, not a blur: ${edge} px between the track and the board`);
+  assert.deepEqual(errors, []);
+});
+
+test('a press on a pad’s pixels selects that pad and lights them; from the bottom, its mirrored place does', async (t) => {
+  const { page, pane, errors } = await open(t, 'blinky.kicad_pcb');
+  const fitted = await frame(pane);
+  const canvas = await canvasOf(pane).boundingBox();
+  const transform = fitPlotTransform(layoutPlot(BOARD), Math.round(canvas.width), Math.round(canvas.height));
+  const sheet = BOARD.sheets[0];
+  const at = ([x, y], mirrored = false) => pageToScreen(transform, mirrored ? sheet.width - x : x, y);
+  const selected = () => page.evaluate(() => window.cadHarness.a.controller.readState().selection.flatMap(reference => reference.target.selectors));
+  const highlight = [141, 197, 255];
+  // R1 pad 2 (sheet 36.65, 15): KiCad's copper, until a press on it selects it and lights it.
+  const [x, y] = at([36.65, 15]);
+  assert.ok(!near(pixel(fitted, x, y), highlight, 40), `KiCad's copper first: ${pixel(fitted, x, y)}`);
+  await page.mouse.click(canvas.x + x, canvas.y + y);
+  await page.mouse.move(canvas.x + 2, canvas.y + 2);
+  await page.waitForFunction(() => window.cadHarness.a.controller?.readState().selection.length === 1);
+  assert.deepEqual(await selected(), ['#R1.2']);
+  const lit = await frame(pane, fitted);
+  assert.ok(near(pixel(lit, x, y), highlight, 40), `the pad is lit where it is: ${pixel(lit, x, y)}`);
+  // From the bottom the board is mirrored: J1 pad 2 (sheet 5, 17.54) is at the right, where the top
+  // view has bare board, and a press there picks it and lights it there.
+  await pane.getByRole('button', { name: 'Settings' }).click();
+  await page.getByRole('combobox', { name: 'View from' }).click();
+  await page.getByRole('option', { name: 'Bottom' }).click();
+  await page.keyboard.press('Escape');
+  const mirrored = await frame(pane, lit);
+  const [mx, my] = at([5, 17.54], true);
+  await page.mouse.click(canvas.x + mx, canvas.y + my);
+  await page.mouse.move(canvas.x + 2, canvas.y + 2);
+  await page.waitForFunction(() => window.cadHarness.a.controller?.readState().selection[0]?.target.selectors[0] === '#J1.2');
+  const from = await frame(pane, mirrored);
+  assert.ok(near(pixel(from, mx, my), highlight, 40), `J1.2 is lit at its mirrored place: ${pixel(from, mx, my)}`);
   assert.deepEqual(errors, []);
 });
 

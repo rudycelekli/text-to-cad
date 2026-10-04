@@ -48,6 +48,9 @@ test("a reference finds its rows, and a row its owners", () => {
   assert.deepEqual(boardTreeNodeIds("#U1.2"), ["pad:U1.2", "netpad:U1.2"]);
   assert.deepEqual(boardTreeNodeIds("#net:VIN@x1y2"), ["net:VIN"]);
   assert.deepEqual(boardTreeNodeIds('#net:"a b"'), ["net:a b"]);
+  // A quoted name may hold what a point is spelled with.
+  assert.deepEqual(boardTreeNodeIds('#net:"x@x1y2"@x3y4'), ["net:x@x1y2"]);
+  assert.deepEqual(boardTreeNodeIds("#U 3"), []);
   assert.deepEqual(boardTreeNodeIds("#@x1y2"), []);
   assert.deepEqual(boardTreeAncestors(tree, "pad:U1.2"), ["group:parts", "kind:ICs", "part:U1"]);
 });

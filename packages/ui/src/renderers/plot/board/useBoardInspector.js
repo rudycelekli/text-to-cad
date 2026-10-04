@@ -11,10 +11,13 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createBoardIndex } from "@text-to-cad/core/lib/board2d/boardIndex.js";
 import { createSchematicIndex } from "@text-to-cad/core/lib/board2d/schematicIndex.js";
 import { drawBoardOverlay } from "@text-to-cad/core/lib/board2d/boardOverlay.js";
-import { buildBoardRefToken, parseBoardRefSelector } from "@text-to-cad/core/lib/boardRefs.js";
+import { buildBoardRefToken } from "@text-to-cad/core/lib/boardRefs.js";
 import { screenToPage } from "@text-to-cad/core/lib/plot2d/index.js";
 
 export const BOARD_TOOL = Object.freeze({ SELECT: "select", MEASURE: "measure", DRAW: "draw" });
+// A check is the same check in a new revision when KiCad says the same of the same things.
+const sameFinding = (left, right) => left.check === right.check && left.type === right.type && left.description === right.description
+  && left.items.length === right.items.length && left.items.every((item, at) => item.text === right.items[at].text && item.ref === right.items[at].ref);
 // How far a pick may miss a small thing (a via, a thin track), and how far Measure reaches to snap.
 const PICK_SLOP_PX = 4;
 const SNAP_PX = 10;
@@ -45,6 +48,9 @@ export function useBoardInspector({ plot, transformRef, requestPaint, canvasRef,
   const mirrorX = index?.document === "board" && side === "bottom" && sheet ? sheet.x + sheet.width / 2 : null;
 
   const [tool, setTool] = useState(BOARD_TOOL.SELECT);
+  // The tool in hand as the pointer's handlers read it, between renders.
+  const toolRef = useRef(tool);
+  toolRef.current = tool;
   const [selectMode, setSelectMode] = useState("all");
   const [measureMode, setMeasureMode] = useState("all");
   const [selection, setSelection] = useState(EMPTY);
@@ -56,12 +62,22 @@ export function useBoardInspector({ plot, transformRef, requestPaint, canvasRef,
   // The viewer's copy of a reference (a double-click's), which the renderer hands the clipboard.
   const copyRef = useRef(null);
 
-  // A new revision of the board keeps what still names something on it.
+  // A new revision of the board keeps what still names something on it — the selection, and the
+  // check in focus where KiCad still reports it (found again by what it says, not where it was).
+  const findingsRef = useRef(index?.findings ?? EMPTY);
   useEffect(() => {
     if (!index) return;
     setSelection((current) => {
       const kept = current.filter((selector) => index.resolve(selector));
       return kept.length === current.length ? current : kept;
+    });
+    const before = findingsRef.current;
+    findingsRef.current = index.findings;
+    setFocusedFinding((focused) => {
+      if (focused == null || before === index.findings) return focused;
+      const was = before[focused];
+      const again = was ? index.findings.findIndex((finding) => sameFinding(finding, was)) : -1;
+      return again >= 0 ? again : null;
     });
     hoverRef.current = null;
   }, [index]);
@@ -115,11 +131,28 @@ export function useBoardInspector({ plot, transformRef, requestPaint, canvasRef,
     return { page, label: "", selector: index.pointSelector(page) };
   }, [index, toPage, transformRef, measureMode]);
 
+  // ---- the tool in hand -------------------------------------------------------
   const setCursor = (value) => { if (canvasRef?.current) canvasRef.current.style.cursor = value; };
+  const clearMeasure = useCallback(() => { setMeasurements(EMPTY); setMeasureStart(null); draftRef.current = null; }, []);
+  /** Take `next` up from the tool in hand, doing what leaving that tool does. */
+  const switchTool = useCallback((next) => {
+    const current = toolRef.current;
+    if (current === next) return;
+    // Leaving Measure cancels its unfinished pick; its completed measurements stay, with their panel.
+    if (current === BOARD_TOOL.MEASURE) { setMeasureStart(null); draftRef.current = null; }
+    // Leaving Select drops the selection and the hover with it.
+    if (current === BOARD_TOOL.SELECT) { hoverRef.current = null; setSelection(EMPTY); setFocusedFinding(null); }
+    toolRef.current = next;
+    setTool(next);
+    setCursor("");
+    requestPaint?.();
+  }, [requestPaint]);
 
   // ---- selection --------------------------------------------------------------
+  /** Select what `selectors` name on this document (what names nothing here is left out); `add` toggles each. */
   const select = useCallback((selectors, { add = false, finding: findingIndex = null } = {}) => {
-    const valid = (Array.isArray(selectors) ? selectors : [selectors]).map((selector) => parseBoardRefSelector(selector)?.canonical).filter(Boolean);
+    const valid = (Array.isArray(selectors) ? selectors : [selectors]).map((selector) => index?.resolve(selector)?.selector).filter(Boolean);
+    switchTool(BOARD_TOOL.SELECT);
     setFocusedFinding(findingIndex);
     setSelection((current) => {
       if (!add) return valid.length ? [...new Set(valid)] : EMPTY;
@@ -127,8 +160,7 @@ export function useBoardInspector({ plot, transformRef, requestPaint, canvasRef,
       for (const selector of valid) { if (next.has(selector)) next.delete(selector); else next.add(selector); }
       return [...next];
     });
-    setTool(BOARD_TOOL.SELECT);
-  }, []);
+  }, [index, switchTool]);
   const clear = useCallback(() => { setSelection(EMPTY); setFocusedFinding(null); }, []);
 
   // ---- the pointer ------------------------------------------------------------
@@ -138,6 +170,8 @@ export function useBoardInspector({ plot, transformRef, requestPaint, canvasRef,
       if (tool === BOARD_TOOL.MEASURE) {
         draftRef.current = point ? snapAt(point) : null;
         setCursor("crosshair");
+        // The draft is drawn only from a first point on.
+        if (!measureStart) return;
       } else {
         const hit = point ? pickAt(point) : null;
         if ((hit?.selector || "") === (hoverRef.current?.selector || "")) return;
@@ -152,6 +186,8 @@ export function useBoardInspector({ plot, transformRef, requestPaint, canvasRef,
         const picked = snapAt(point);
         if (!picked) return;
         if (!measureStart) { setMeasureStart(picked); return; }
+        // The same point again (a double-click's second press) measures nothing.
+        if (picked.page[0] === measureStart.page[0] && picked.page[1] === measureStart.page[1]) return;
         measurementSequence += 1;
         setMeasurements((current) => [...current, { id: `m${measurementSequence}`, a: measureStart, b: picked }]);
         setMeasureStart(null);
@@ -184,30 +220,26 @@ export function useBoardInspector({ plot, transformRef, requestPaint, canvasRef,
     return { ...measurement, distance: Math.hypot(bx - ax, by - ay), dx: bx - ax, dy: by - ay };
   }) : EMPTY), [index, measurements]);
   const removeMeasurement = useCallback((id) => setMeasurements((current) => current.filter((item) => item.id !== id)), []);
-  const clearMeasure = useCallback(() => { setMeasurements(EMPTY); setMeasureStart(null); draftRef.current = null; }, []);
 
-  /** Escape, innermost first: an unfinished measurement, then the selection. Answers whether it spent the key. */
+  /**
+   * Escape, innermost first, as on a STEP: an unfinished measurement, then the Measure tool (its
+   * results stay), then the selection. Answers whether it spent the key.
+   */
   const escape = useCallback(() => {
     if (measureStart) { setMeasureStart(null); draftRef.current = null; requestPaint?.(); return true; }
+    if (toolRef.current === BOARD_TOOL.MEASURE) { switchTool(BOARD_TOOL.SELECT); return true; }
     if (selection.length || focusedFinding != null) { clear(); return true; }
     return false;
-  }, [measureStart, selection.length, focusedFinding, clear, requestPaint]);
+  }, [measureStart, selection.length, focusedFinding, clear, requestPaint, switchTool]);
 
   const chooseTool = useCallback((next) => {
-    setTool((current) => {
-      // Measure toggles: a press while it is up clears it and puts it down, back to Select.
-      if (next === BOARD_TOOL.MEASURE && current === BOARD_TOOL.MEASURE) { clearMeasure(); return BOARD_TOOL.SELECT; }
-      // Draw toggles too: a second press puts it down, and the sketch with it.
-      if (next === BOARD_TOOL.DRAW && current === BOARD_TOOL.DRAW) return BOARD_TOOL.SELECT;
-      // Leaving Measure cancels its unfinished pick; its completed measurements stay, with their panel.
-      if (current === BOARD_TOOL.MEASURE && next !== BOARD_TOOL.MEASURE) { setMeasureStart(null); draftRef.current = null; }
-      if (next !== BOARD_TOOL.SELECT && current === BOARD_TOOL.SELECT) { hoverRef.current = null; }
-      if (current === BOARD_TOOL.SELECT && next !== BOARD_TOOL.SELECT) setSelection(EMPTY);
-      return next;
-    });
-    setCursor("");
-    requestPaint?.();
-  }, [clearMeasure, requestPaint]);
+    const current = toolRef.current;
+    // Measure toggles: a press while it is up clears it and puts it down, back to Select.
+    if (next === BOARD_TOOL.MEASURE && current === BOARD_TOOL.MEASURE) { clearMeasure(); switchTool(BOARD_TOOL.SELECT); return; }
+    // Draw toggles too: a second press puts it down, and the sketch with it.
+    if (next === BOARD_TOOL.DRAW && current === BOARD_TOOL.DRAW) { switchTool(BOARD_TOOL.SELECT); return; }
+    switchTool(next);
+  }, [clearMeasure, switchTool]);
 
   return {
     available: Boolean(index), document: index?.document ?? null, index, tool, chooseTool, selectMode, setSelectMode, measureMode, setMeasureMode,

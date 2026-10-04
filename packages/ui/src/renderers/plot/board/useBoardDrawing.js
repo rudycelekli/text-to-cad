@@ -7,7 +7,9 @@
  * (`drawingViewLock.js`). The editor maps its scene to the pane as `(scene + scroll) * zoom`; once
  * there is something to keep aligned (the first stroke or the first pan), the plot's transform and
  * the editor's viewport are taken together, and every later viewport moves the plot by the same
- * scroll and zoom.
+ * scroll and zoom. When the pane changes size the editor keeps its scroll and zoom against the
+ * pane's corner while the plot would refit or keep its centre, so the plot is put back under the
+ * ink from the same lock, in the same frame.
  */
 import { useCallback, useEffect, useRef } from "react";
 import { useDrawingSession } from "../../../drawing/session.js";
@@ -16,9 +18,10 @@ import { followDrawingViewport } from "./boardViewLock.js";
 
 /**
  * @param {{ active: boolean, transformRef: { current: object|null }, setView(transform: object): void,
- *   canvasRef: { current: HTMLCanvasElement|null } }} options
+ *   paintNow?: () => void, settle?: () => void, canvasRef: { current: HTMLCanvasElement|null } }} options
+ *   `settle`: paint the plot final now (not a patch scaled while the view rests), before a capture.
  */
-export function useBoardDrawing({ active, transformRef, setView, canvasRef }) {
+export function useBoardDrawing({ active, transformRef, setView, paintNow, settle, canvasRef }) {
   const drawing = useDrawingSession(active, CAD_DRAWING_DEFAULTS);
   const controllerRef = useRef(null);
   const lockRef = useRef(null);
@@ -35,6 +38,21 @@ export function useBoardDrawing({ active, transformRef, setView, canvasRef }) {
     if (lockRef.current || !transformRef.current) return;
     lockRef.current = { transform: { ...transformRef.current }, viewport: { ...viewportRef.current } };
   }, [transformRef]);
+  // The pane changed size under the sketch: the plot's view again from the lock and the editor's
+  // viewport, painted before the frame shows the plot refitted. The plane view sizes its canvas in
+  // its own observer, so this one, on the canvas, hears of it after that.
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!active || !canvas || typeof ResizeObserver === "undefined") return undefined;
+    const observer = new ResizeObserver(() => {
+      if (!lockRef.current) return;
+      setView(followDrawingViewport(lockRef.current, viewportRef.current));
+      paintNow?.();
+    });
+    observer.observe(canvas);
+    return () => observer.disconnect();
+  }, [active, canvasRef, setView, paintNow]);
+
   const onViewportChange = useCallback((viewport) => {
     if (!viewport) return;
     lock();
@@ -55,6 +73,8 @@ export function useBoardDrawing({ active, transformRef, setView, canvasRef }) {
   const capture = useCallback(() => new Promise((resolve, reject) => {
     const plot = canvasRef.current;
     if (!plot) { reject(new Error("The board is not on screen yet.")); return; }
+    // A sketch made right after a zoom is copied as sharp as the board will be once it rests.
+    settle?.();
     const canvas = document.createElement("canvas");
     canvas.width = plot.width;
     canvas.height = plot.height;
@@ -64,7 +84,7 @@ export function useBoardDrawing({ active, transformRef, setView, canvasRef }) {
     const ink = controllerRef.current?.inkCanvas?.();
     if (ink) context.drawImage(ink, 0, 0, canvas.width, canvas.height);
     canvas.toBlob((blob) => (blob ? resolve(blob) : reject(new Error("The browser could not encode the board as a PNG."))), "image/png");
-  }), [canvasRef]);
+  }), [canvasRef, settle]);
 
   return { drawing, overlay: { drawing, onReady, onContentChange, onViewportChange }, capture };
 }

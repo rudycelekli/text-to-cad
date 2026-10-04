@@ -5,10 +5,9 @@ import { useId } from "react";
 // size in its mode menu — All shows the tool's own glyph, Select's pointer or Measure's ruler. The
 // strip's button shows the tool's glyph with the mode's glyph shrunk to a badge in its top-right
 // corner (none for All); the tool's glyph steps down to the bottom-left to make room, and the badge
-// is cut out of it, so the two never touch at the strip's 14px. A file supplies its modes' glyphs
+// is cut out of it, so the two never touch at the strip's 14px. A renderer supplies its modes' glyphs
 // (`glyphs`: mode id -> `weight => <svg content>`; `weight` thickens strokes for the badge, which is
-// drawn at under half size) — a STEP's parts, faces and edges, a board's parts, pads and nets, a
-// schematic's symbols, pins and nets.
+// drawn at under half size), whatever its modes pick.
 export const TOOL_GLYPHS = Object.freeze({
   select: <path d="M4.037 4.688a.495.495 0 0 1 .651-.651l16 6.5a.5.5 0 0 1-.063.947l-6.124 1.58a2 2 0 0 0-1.438 1.435l-1.579 6.126a.5.5 0 0 1-.947.063z" />,
   measure: <>
