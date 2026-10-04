@@ -27,6 +27,7 @@ CLAUDE_PLUGIN_PATH = REPO_ROOT / ".claude-plugin" / "plugin.json"
 CODEX_MCP_PATH = REPO_ROOT / "codex.mcp.json"
 CLAUDE_MCP_PATH = REPO_ROOT / "claude.mcp.json"
 CODEX_PLUGIN_PATH = REPO_ROOT / ".codex-plugin" / "plugin.json"
+CURSOR_PLUGIN_PATH = REPO_ROOT / ".cursor-plugin" / "plugin.json"
 MARKETPLACE_PATH = REPO_ROOT / ".claude-plugin" / "marketplace.json"
 SKILLS_ROOT = REPO_ROOT / "skills"
 
@@ -44,15 +45,15 @@ def load_json(path: Path) -> dict:
 
 
 class PluginManifestPolicyTest(unittest.TestCase):
-    def test_both_provider_plugin_manifests_exist_at_the_repo_root(self) -> None:
-        for path in (CLAUDE_PLUGIN_PATH, CODEX_PLUGIN_PATH):
+    def test_every_provider_plugin_manifest_exists_at_the_repo_root(self) -> None:
+        for path in (CLAUDE_PLUGIN_PATH, CODEX_PLUGIN_PATH, CURSOR_PLUGIN_PATH):
             self.assertTrue(
                 path.is_file(),
                 f"missing plugin manifest: {path.relative_to(REPO_ROOT)}",
             )
 
     def test_plugin_manifests_name_the_plugin_consistently(self) -> None:
-        for path in (CLAUDE_PLUGIN_PATH, CODEX_PLUGIN_PATH):
+        for path in (CLAUDE_PLUGIN_PATH, CODEX_PLUGIN_PATH, CURSOR_PLUGIN_PATH):
             manifest = load_json(path)
             self.assertEqual(
                 manifest.get("name"),
@@ -60,8 +61,49 @@ class PluginManifestPolicyTest(unittest.TestCase):
                 f"{path.relative_to(REPO_ROOT)} must declare name {PLUGIN_NAME!r}",
             )
 
+    def test_plugin_manifests_describe_the_plugin_identically(self) -> None:
+        # Each host lists the plugin by its manifest's description; they are one text, so an edit
+        # to one must reach them all.
+        codex = load_json(CODEX_PLUGIN_PATH)
+        marketplace = load_json(MARKETPLACE_PATH)
+        descriptions = {
+            "claude": load_json(CLAUDE_PLUGIN_PATH).get("description"),
+            "codex": codex.get("description"),
+            "codex interface": codex["interface"].get("longDescription"),
+            "cursor": load_json(CURSOR_PLUGIN_PATH).get("description"),
+            "marketplace": next(e for e in marketplace["plugins"] if e.get("name") == PLUGIN_NAME).get("description"),
+        }
+        self.assertEqual(len(set(descriptions.values())), 1, descriptions)
+
+    def test_plugin_manifests_link_the_same_pages(self) -> None:
+        # The listing links every directory shows: homepage, docs, support, privacy policy and terms.
+        # Claude and Cursor spell them as top-level fields, Codex under `interface`.
+        claude, cursor = load_json(CLAUDE_PLUGIN_PATH), load_json(CURSOR_PLUGIN_PATH)
+        codex = load_json(CODEX_PLUGIN_PATH)["interface"]
+        for claude_key, codex_key in (("homepage", "websiteURL"), ("supportUrl", "supportURL"),
+                                      ("privacyPolicyUrl", "privacyPolicyURL"),
+                                      ("termsOfServiceUrl", "termsOfServiceURL")):
+            with self.subTest(claude_key):
+                self.assertTrue(claude.get(claude_key, "").startswith("https://"), claude_key)
+                self.assertEqual(cursor.get(claude_key), claude[claude_key])
+                self.assertEqual(codex.get(codex_key), claude[claude_key])
+        for key in ("documentationUrl", "repository", "author", "license"):
+            with self.subTest(key):
+                self.assertEqual(cursor.get(key), claude.get(key))
+
+    def test_plugin_short_descriptions_match(self) -> None:
+        # The one-line tagline a host shows beside the name: Codex's shortDescription and the
+        # Claude marketplace's description. Cursor's manifest has no such field.
+        marketplace = load_json(MARKETPLACE_PATH)
+        shorts = {
+            "codex": load_json(CODEX_PLUGIN_PATH)["interface"].get("shortDescription"),
+            "marketplace": marketplace.get("description"),
+            "marketplace metadata": marketplace.get("metadata", {}).get("description"),
+        }
+        self.assertEqual(set(shorts.values()), {"Design 3D models"}, shorts)
+
     def test_plugin_manifests_point_at_the_canonical_skills_directory(self) -> None:
-        for path in (CLAUDE_PLUGIN_PATH, CODEX_PLUGIN_PATH):
+        for path in (CLAUDE_PLUGIN_PATH, CODEX_PLUGIN_PATH, CURSOR_PLUGIN_PATH):
             manifest = load_json(path)
             self.assertIn(
                 manifest.get("skills"),
@@ -155,6 +197,16 @@ class PluginManifestPolicyTest(unittest.TestCase):
         self.assertEqual(args[-2:], ["cadgen", "mcp"])
         version = (REPO_ROOT / "VERSION").read_text(encoding="utf-8").strip()
         self.assertEqual(args[args.index("--from") + 1], f"cadgen=={version}")
+
+    def test_cursor_starts_claudes_server_and_shows_its_icon(self) -> None:
+        # Cursor reads only .cursor-plugin/plugin.json. Its MCP config format is Claude's, so it
+        # starts the same pinned server rather than a third copy of the command. Its logo must be a
+        # relative path inside the plugin tree: Cursor resolves it to that commit's raw file.
+        manifest = load_json(CURSOR_PLUGIN_PATH)
+        self.assertEqual(manifest.get("mcpServers"), "./claude.mcp.json")
+        logo = manifest.get("logo", "")
+        self.assertFalse(logo.startswith(("/", "..")) or "://" in logo, logo)
+        self.assertEqual(logo, ".claude-plugin/icon.png")
 
     def test_no_stale_plugin_subdirectory_package_remains(self) -> None:
         # The generated `plugins/cad/skills` copy is what the repo-root move

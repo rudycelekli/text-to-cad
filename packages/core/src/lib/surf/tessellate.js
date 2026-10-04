@@ -41,7 +41,7 @@ import { cos, sin } from "./trig.js";
 // cadgen/store/meshes.py, which is the one that builds and validates the key —
 // bumping only the first leaves the store rejecting every entry the new
 // algorithm writes.
-export const TESSELLATION_VERSION = 5;
+export const TESSELLATION_VERSION = 8;
 
 export const DEFAULT_OPTIONS = {
   // Max 3D distance between the surface and a triangle edge midpoint,
@@ -118,6 +118,9 @@ function sampleLoopPolygon(face, loop, floats, tolerance, sharedEdges) {
         else if (Math.abs(uv[d] - hi) <= epsilon) uv[d] = hi;
       }
     }
+    // An edge that is one point in this face's parameters (one shorter than its
+    // Float32 pcurve can resolve) adds no segment: its neighbours meet there.
+    if (segment.every((uv) => uv[0] === segment[0][0] && uv[1] === segment[0][1])) continue;
     if (!forward) {
       segment.reverse();
       fractions?.reverse();
@@ -1654,22 +1657,49 @@ function conformBoundaries(rawFaces, sharedEdges, floats, mergeTolerance = 0) {
       minted.set(key, id);
       return id;
     };
+    // This face's own boundary points on each model edge, for telling which of
+    // several edges a mesh edge runs along (below).
+    const ownFractions = new Map();
+    for (const labels of boundary.values()) {
+      for (const { ord, f } of labels) {
+        let list = ownFractions.get(ord);
+        if (!list) ownFractions.set(ord, (list = []));
+        list.push(f);
+      }
+    }
+    const holdsVertexBetween = (ord, fp, fq) => {
+      const own = ownFractions.get(ord) || [];
+      const eps = fractionEps(ord);
+      if (sharedEdges.get(ord)?.closed) {
+        const forward = (fq - fp + 1) % 1;
+        const start = forward <= 0.5 ? fp : fq;
+        const arc = forward <= 0.5 ? forward : (fp - fq + 1) % 1;
+        return own.some((f) => {
+          const d = (f - start + 1) % 1;
+          return d > eps && d < arc - eps;
+        });
+      }
+      return own.some((f) => f > Math.min(fp, fq) + eps && f < Math.max(fp, fq) - eps);
+    };
     const insertsFor = (p, q) => {
       const labelsP = boundary.get(p);
       const labelsQ = boundary.get(q);
       if (!labelsP || !labelsQ) return null;
       if (edgeUse.get(pairKey(p, q)) !== 1) return null;
-      let bp = null;
-      let bq = null;
+      const common = [];
       for (const lp of labelsP) {
         const lq = labelsQ.find((label) => label.ord === lp.ord);
-        if (lq) {
-          bp = lp;
-          bq = lq;
-          break;
-        }
+        if (lq) common.push([lp, lq]);
       }
-      if (!bp || !bq) return null;
+      if (!common.length) return null;
+      // A face bounded by just two model edges (an arc and its chord, say) has
+      // both corners on both, and the mesh edge between the corners runs along
+      // only one of them: the one on which this face has no point between them.
+      // Taking whichever came first split the chord with the ARC's points, and
+      // the weld below folded that fan into the arc's own vertices: the face
+      // rendered and exported half folded over itself.
+      const [bp, bq] = common.length === 1 ? common[0]
+        : common.find(([lp, lq]) => !holdsVertexBetween(lp.ord, lp.f, lq.f)) ?? common[0];
       const union = fractionsByOrd.get(bp.ord);
       if (!union) return null;
       const shared = sharedEdges.get(bp.ord);
@@ -1835,7 +1865,22 @@ export function tessellateComponent(index, floats, options = {}) {
       }
     }
   }
-  // No loop samples (a component with no faces) leaves the box empty: the floor.
+  // A component with no faces has no loops: an imported STEP product that holds
+  // only wires is measured by its edge curves instead.
+  if (!(min[0] <= max[0])) {
+    for (const edge of index.edges) {
+      if (!edge.curve) continue;
+      const [t0, t1] = edge.curve.range;
+      for (const t of [t0, (t0 + t1) / 2, t1]) {
+        const p = evaluateCurve3(edge.curve, floats, t);
+        for (let d = 0; d < 3; d += 1) {
+          if (p[d] < min[d]) min[d] = p[d];
+          if (p[d] > max[d]) max[d] = p[d];
+        }
+      }
+    }
+  }
+  // Nothing to measure (an empty product entry) leaves the box empty: the floor.
   const extent = length3(sub(max, min));
   const scale = Number.isFinite(extent) ? Math.max(extent, 1e-6) : 1e-6;
 
@@ -1882,6 +1927,17 @@ export function tessellateComponent(index, floats, options = {}) {
       }
       shared.points[0] = canonicalCorner(shared.points[0]);
       shared.points[shared.points.length - 1] = canonicalCorner(shared.points[shared.points.length - 1]);
+      // Ends that weld into ONE corner make the edge closed, though its curve's
+      // ends miss each other by more than sampleSharedEdge's relative test
+      // allows: an intake plenum's end face, bounded by one spline that closes
+      // to 0.18 um, kept its seam at fraction 1 alone, so conformity read the
+      // segment from the seam to the first point as the whole loop and folded
+      // the face over itself. A curve that only spans the weld distance stays
+      // open.
+      if (shared.curve.kind !== "line" && shared.points[0] === shared.points[shared.points.length - 1]
+        && shared.points.some((point) => length3(sub(point, shared.points[0])) > weldTolerance * 2 ** 10)) {
+        shared.closed = true;
+      }
     }
   }
 
@@ -1948,13 +2004,6 @@ export function tessellateComponent(index, floats, options = {}) {
       if (value > max[d]) max[d] = value;
     }
   }
-  if (!positions.length) {
-    // No triangles: a STEP product that is an empty compound, as some library models
-    // carry. A point at its own origin keeps its bounds finite for every consumer
-    // (the cache header, camera framing) rather than the infinite empty box.
-    min = [0, 0, 0];
-    max = [0, 0, 0];
-  }
 
   const edges = [];
   for (const edge of index.edges) {
@@ -1967,6 +2016,24 @@ export function tessellateComponent(index, floats, options = {}) {
       visibilityClass: edge.class,
       polyline,
     });
+  }
+  // No triangles (wires only, or no face that meshed): its edges are the bounds.
+  // With no edges either (an empty product entry), a point at its own origin
+  // keeps the box finite for the cache header and every reader.
+  if (!positions.length) {
+    for (const { polyline } of edges) {
+      for (let i = 0; i < polyline.length; i += 3) {
+        for (let d = 0; d < 3; d += 1) {
+          const value = polyline[i + d];
+          if (value < min[d]) min[d] = value;
+          if (value > max[d]) max[d] = value;
+        }
+      }
+    }
+    if (!(min[0] <= max[0])) {
+      min = [0, 0, 0];
+      max = [0, 0, 0];
+    }
   }
 
   return {

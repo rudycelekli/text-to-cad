@@ -8,9 +8,10 @@ product and `models/` as the shared fixture/artifact area.
 `main` is the only branch you develop on: the source tree, what installers
 clone, and what releases are cut from. Branch from `main` and open PRs against
 `main`; never push it directly. There is no development symlink layout — every
-path in the tree is the real file. `claude-plugin`, the plugin claude.ai's
-directory follows, is written only by `Publish Release` (see below); never
-commit to it.
+path in the tree is the real file. `plugin`, the plugin the directories
+follow (and `claude-plugin`, its old name, until claude.ai's listing moves), is
+written only by `Publish Release` (see below); never commit to it. `main` stays
+an installable plugin too: every manifest and MCP config lives at its root.
 
 ## Release Workflow
 
@@ -28,9 +29,9 @@ any branch but `release/*`. Releases are two GitHub Actions workflows:
   are bare `0.4.x` tags) + GitHub-Releases that same merged commit with the
   wheel and sdist that went to PyPI attached as release assets, plus the
   plugin ZIP that a person uploads to OpenAI's plugin portal, which has no API.
-  It also commits the plugin alone (manifest, icon, `claude.mcp.json`,
-  `skills/`, `LICENSE`, README) onto the `claude-plugin` branch, which claude.ai's plugin directory
-  follows (`scripts/release/claude_plugin_branch.py`).
+  It also commits the plugin alone (Claude and Cursor manifests, icon,
+  `claude.mcp.json`, `skills/`, `LICENSE`, README) onto the `plugin` branch,
+  which the plugin directories follow (`scripts/release/plugin_branch.py`).
 
 When asked to publish, make, or ship a release, dispatch `Prepare Release` on
 `main`. Never pick the semver bump yourself: if the request does not name patch,
@@ -61,8 +62,9 @@ path, the rehearsal, and local/manual fallbacks.
 ## Repo Map
 
 - `skills/`: agent skills and their references/scripts.
-- `.claude-plugin/`, `.codex-plugin/`: agent plugin manifests. The repository
-  root is the plugin package; its skills are `skills/` directly.
+- `.claude-plugin/`, `.codex-plugin/`, `.cursor-plugin/`: agent plugin
+  manifests. The repository root is the plugin package; its skills are
+  `skills/` directly.
 - `models/`: sample and durable CAD/robot-description fixtures.
 - `apps/web/`: the CAD Viewer's React client (its backend is `cadgen.viewer`).
 - `apps/mcp/`: the CAD app agent hosts render: tabs in Codex, cards in Claude Desktop (its server is `cadgen mcp`).
@@ -208,7 +210,7 @@ when touching shared surfaces or before handoff:
 - Focused runners: `scripts/test/test-js.sh`, `scripts/test/test-docs.sh`,
   `scripts/test/test-python.sh`, `scripts/test/test-global.sh`.
   `test-python.sh` takes `--select cadgen|viewer|skills|all` and
-  `--print-weights`; `test-js.sh` takes `--select core|ui|web|codex|all`. See
+  `--print-weights`; `test-js.sh` takes `--select core|ui|web|mcp|all`. See
   `scripts/README.md`.
 - In GitHub Actions, `test.yml` runs one conditional job per concern. The graph,
   stable required check names and workspace install recipes are in

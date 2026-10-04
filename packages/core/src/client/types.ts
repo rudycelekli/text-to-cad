@@ -150,7 +150,9 @@ export interface CadWorkspaceService {
   /** A KiCad board or schematic as the SVG sheets its tool plots, on the server. */
   plotPayload(file: string, options?: CadRequestOptions): Promise<CadPlotPayload>;
   readonly resources: CadResourceProvider;
-  resolveSurfaceComponents(view: CadRuntimeView, requested: CadSurfaceComponentRequest[], options?: CadRequestOptions): Promise<Map<string, CadSurfaceTicket>>;
+  /** `onReady` hears each component as soon as its row is ready, while the rest are still awaited. */
+  resolveSurfaceComponents(view: CadRuntimeView, requested: CadSurfaceComponentRequest[],
+    options?: CadRequestOptions & { onReady?: (cid: string, ticket: CadSurfaceTicket) => void }): Promise<Map<string, CadSurfaceTicket>>;
   observeEditingPreview(file: string, onUpdate: (preview: CadEditingPreview) => void, onError: (error: unknown) => void, options?: CadPreviewObserverOptions): () => void;
   createRenderSession(options?: { file?: string }): CadRenderSession;
   dispose(): void;
@@ -175,4 +177,11 @@ export interface CadClientOptions {
    * client then asks the preview route nothing. Returns the unsubscribe.
    */
   editingPreviewFeed?: (file: string, onUpdate: (preview: CadEditingPreview) => void, onError: (error: unknown) => void) => () => void;
+  /**
+   * The most bytes one batched read asks for over this client's `fetch`: a host whose channel
+   * carries large replies slowly declares a ceiling, and reads that batch (a package's warm
+   * tessellation bodies) stay within the lesser of it and the server's own bound
+   * (`TESS_BATCH_MAX_BYTES`). Unset, the server's bound alone applies.
+   */
+  maxBatchBytes?: number;
 }

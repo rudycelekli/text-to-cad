@@ -50,10 +50,10 @@ where those files ship, so these scripts are what produces them.
 - `test.sh` — `test-js.sh`, then `test-python.sh`, then `test-global.sh`: the
   whole tree on one machine. Called by `release-publish.yml`; `test.yml` calls
   the focused runners per job instead.
-- `test-js.sh [--select core|ui|web|codex|all]` — builds the required shared exports,
+- `test-js.sh [--select core|ui|web|mcp|all]` — builds the required shared exports,
   checks dependency boundaries and runs the selected shared JS/UI/web suites.
-  Core includes the pure `bench/viewer-memory/` helper units; `codex` also builds
-  the CAD app, whose one-file build is half its contract.
+  Core includes the pure `bench/viewer-memory/` helper units; `mcp` runs the CAD
+  app's tests and builds it, since its one-file build is half its contract.
 - `test-python.sh [--keep-going] [--select GROUP] [--print-weights]`
   — the cadgen package suite, then every skill's suite. Each test FILE runs in
   its own interpreter against its own temporary store, `CADGEN_TEST_JOBS` at a
@@ -133,14 +133,14 @@ where those files ship, so these scripts are what produces them.
   `.mcp.json`) and checks it against the portal's documented package rules.
   Called by `release-publish.yml`; tested by
   `tests/python/global/test_plugin_zip.py`.
-- `claude_plugin_branch.py --check | --commit [--parent REF]` — builds the
-  plugin claude.ai's directory follows (`.claude-plugin/` manifest and icon,
-  `claude.mcp.json`, `skills/`, `LICENSE`, and the README with outside links
-  pinned to the release
-  commit), checks it against the directory's file rules, and with `--commit`
-  commits it on `REF` and prints the commit. Called by `release-publish.yml`,
-  whose `claude-plugin` job pushes it to the `claude-plugin` branch; tested by
-  `tests/python/global/test_claude_plugin_branch.py`.
+- `plugin_branch.py --check | --commit [--parent REF]` — builds the plugin the
+  directories follow (`.claude-plugin/` manifest and icon, `.cursor-plugin/`
+  manifest, `claude.mcp.json`, `skills/`, `LICENSE`, and the README with outside
+  links pinned to the release commit), checks it against claude.ai's file
+  rules, and with `--commit` commits it on `REF` and prints the commit. Called
+  by `release-publish.yml`, whose `plugin-branch` job pushes it to the `plugin`
+  branch (and to `claude-plugin` until claude.ai's listing moves); tested by
+  `tests/python/global/test_plugin_branch.py`.
 - `publish-github-release.sh [--target REF] [--dry-run] [--publish]` — creates and
   pushes the `v<VERSION>` tag and the GitHub Release (a draft unless
   `--publish`). Called by `release-publish.yml`; a local run on the merged release
@@ -186,7 +186,7 @@ this edit still BUILD? It no longer has anything to say about the index.
 `utils/list-skills.sh` — prints every `skills/*/SKILL.md` directory. Used by the
 install scripts and `test-python.sh`.
 
-`bench/` — manual warm-build and viewer performance commands. See
+`bench/` — manual edit, warm-build and viewer performance commands. See
 [benchmark usage](bench/cadgen-performance/README.md). Reports and profiler
 captures are local output under `tmp/`, never committed here. The drivers are
 manual; their `*.test.mjs` helper units run in `test-js.sh`.
