@@ -33,7 +33,7 @@ def _fixture() -> dict:
 class BoardSelectorParityTest(unittest.TestCase):
     def test_the_fixture_has_every_case_kind(self) -> None:
         data = _fixture()
-        for key in ("selectorCases", "invalidSelectors", "formatCases", "tokenCases"):
+        for key in ("selectorCases", "invalidSelectors", "formatCases", "tokenCases", "invalidTokens"):
             self.assertTrue(data.get(key), f"{key} must be present and non-empty")
 
     def test_every_selector_case_parses_as_the_fixture_says(self) -> None:
@@ -68,6 +68,12 @@ class BoardSelectorParityTest(unittest.TestCase):
                 self.assertIsNotNone(token)
                 self.assertEqual(case["path"], token.path)
                 self.assertEqual(case["selectors"], [selector.canonical for selector in token.selectors])
+
+
+    def test_whitespace_outside_a_quoted_name_is_no_token(self) -> None:
+        for token in _fixture()["invalidTokens"]:
+            with self.subTest(token=token):
+                self.assertIsNone(parse_board_token(token))
 
 
 class BoardSelectorEdgesTest(unittest.TestCase):
@@ -110,7 +116,6 @@ class BoardSelectorEdgesTest(unittest.TestCase):
             "PCB/b.kicad_pcb#",  # a file and nothing in it
             "PCB/b.kicad_pcb#U3,",  # an empty place in the list
             "PCB/b.kicad_pcb#U3,3U",
-            '#net:"a b"',  # a token holds no whitespace; the selector alone names that net
             '#net:"open',
             '"unclosed#U3',
             '"\\q"#U3',
@@ -118,6 +123,8 @@ class BoardSelectorEdgesTest(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertIsNone(parse_board_token(text))
         self.assertEqual("a b", parse_board_selector('#net:"a b"').net)
+        # A quoted name keeps its whitespace in a token too, as the viewer copies it.
+        self.assertEqual(("PCB/b.kicad_sch", ['#net:"/Power Stage/VLOC"']), self._split('PCB/b.kicad_sch#net:"/Power Stage/VLOC"'))
 
     def _split(self, text: str):
         token = parse_board_token(text)

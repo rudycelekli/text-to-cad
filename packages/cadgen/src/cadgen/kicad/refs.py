@@ -64,7 +64,7 @@ _WHITESPACE = (
 )
 _WS_CLASS = re.escape(_WHITESPACE)
 
-_REF = r"[A-Za-z][A-Za-z0-9_]*"
+_REF = r"[A-Za-z_][A-Za-z0-9_+\-]*"
 _PAD = r"[A-Za-z0-9_+\-]+"
 _NUMBER = r"-?[0-9]+(?:\.[0-9]+)?"
 _QUOTED = r'"(?:[^"\\]|\\.)*"'
@@ -76,7 +76,6 @@ _PAD_RE = re.compile(rf"({_REF})\.({_PAD})")
 _NET_RE = re.compile(rf"net:({_QUOTED}|{_BARE_NET})(?:{_POINT})?", re.DOTALL)
 _POINT_RE = re.compile(_POINT)
 _NEEDS_QUOTES = re.compile(rf'[{_WS_CLASS}"@#,]')
-_WS_RE = re.compile(rf"[{_WS_CLASS}]")
 
 _DECIMALS = Decimal("0.001")
 
@@ -268,8 +267,9 @@ def parse_board_token(text: str) -> BoardToken | None:
     none) and its selectors in the order written; ``None`` when it is not one.
 
     The file half is split off as a STEP token's is (:func:`cadgen.cad_ref_syntax.split_cad_ref`).
-    A token is one word of a prompt, so its selectors hold no whitespace (a net named with a
-    space is named by a selector alone, ``#net:"a b"``), and every one of them must parse.
+    Its selectors hold whitespace only inside a quoted net name (a hierarchical sheet's
+    ``#net:"/Power Stage/VLOC"``), as its file half does inside quotes, and every one of them must
+    parse.
     """
     stripped = _strip(text)
     if "#" not in stripped:
@@ -282,7 +282,7 @@ def parse_board_token(text: str) -> BoardToken | None:
         except ValueError:
             return None
     path, selector_text = split_cad_ref(stripped)
-    if not selector_text or _WS_RE.search(selector_text):
+    if not selector_text:
         return None
     selectors = [parse_board_selector(piece) for piece in _split_selectors(selector_text)]
     if any(selector is None for selector in selectors):

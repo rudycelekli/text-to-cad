@@ -1,5 +1,5 @@
 {
-  "about": "The board-reference language (.kicad_pcb, .kicad_sch), asserted by packages/core/src/lib/boardRefs.js and cadgen/kicad/refs.py alike. A part is its reference designator, a pad or pin follows a dot, a net is net:<name> (JSON-quoted when the name holds whitespace, a quote, a comma, '@' or '#'), and a point is @x<x>y<y> in the script's millimetres (y up): comma-free, because a token joins several selectors with commas, as STEP tokens do (split outside quotes). Canonical points drop trailing zeros and a negative zero.",
+  "about": "The board-reference language (.kicad_pcb, .kicad_sch), asserted by packages/core/src/lib/boardRefs.js and cadgen/kicad/refs.py alike. A part is its reference designator (a letter or '_', then letters, digits, '_', '+' or '-': what KiCad boards and board.part(ref=...) use), a pad or pin follows a dot, a net is net:<name> (JSON-quoted when the name holds whitespace, a quote, a comma, '@' or '#'), and a point is @x<x>y<y> in the script's millimetres (y up): comma-free, because a token joins several selectors with commas, as STEP tokens do (split outside quotes); whitespace inside a quoted name is the name's, anywhere else it ends the token. Canonical points drop trailing zeros and a negative zero.",
   "selectorCases": [
     {
       "selector": "#U3",
@@ -158,6 +158,20 @@
         -2.25
       ],
       "canonical": "#@x1y-2.25"
+    },
+    {
+      "selector": "#J2-J4.1",
+      "kind": "pad",
+      "ref": "J2-J4",
+      "pad": "1",
+      "canonical": "#J2-J4.1",
+      "why": "a reference holds what KiCad and board.part(ref=...) allow: letters, digits, _ + -"
+    },
+    {
+      "selector": "#_U1",
+      "kind": "part",
+      "ref": "_U1",
+      "canonical": "#_U1"
     }
   ],
   "invalidSelectors": [
@@ -178,7 +192,9 @@
     "#@xay1",
     "#@x1 y2",
     "#U3@x1y2",
-    "#net:a,b"
+    "#net:a,b",
+    "#-U1",
+    "#+R1"
   ],
   "formatCases": [
     {
@@ -270,6 +286,22 @@
         "#@x1y2"
       ],
       "why": "several selectors, comma-joined, split outside quotes, in the order written"
+    },
+    {
+      "token": "board.kicad_sch#net:\"/Power Stage/VLOC\",U3",
+      "path": "board.kicad_sch",
+      "selectors": [
+        "#net:\"/Power Stage/VLOC\"",
+        "#U3"
+      ],
+      "why": "a hierarchical sheet's name puts a space in its nets: inside quotes it is the name's"
     }
+  ],
+  "invalidTokens": [
+    "board.kicad_pcb#U3, U4",
+    "board.kicad_pcb#U 3",
+    "board.kicad_pcb",
+    "board.kicad_pcb#",
+    "board.kicad_pcb#net:\"a b\" ,U3"
   ]
 }

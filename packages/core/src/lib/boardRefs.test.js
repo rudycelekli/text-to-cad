@@ -47,6 +47,10 @@ test("tokens split their selectors outside quotes and rebuild the same", () => {
   }
 });
 
+test("a token with whitespace outside a quoted name is no token", () => {
+  for (const token of fixture.invalidTokens) assert.equal(parseBoardRefToken(token), null, token);
+});
+
 test("a host's list of selectors splits outside quotes", () => {
   assert.deepEqual(splitBoardRefSelectors('#U3, #net:"a,b" ,net:VIN@x1y2,'), ["#U3", '#net:"a,b"', "net:VIN@x1y2"]);
   assert.deepEqual(splitBoardRefSelectors(""), []);

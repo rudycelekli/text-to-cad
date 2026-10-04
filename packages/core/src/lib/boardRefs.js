@@ -2,7 +2,7 @@
 // board or schematic and hands to the agent, which `cadgen.pcb.read_board(path).resolve(ref)` reads.
 // Mirrors cadgen/kicad/refs.py; both assert boardRefs.parity.json.
 //
-//   #U3                 a part: a footprint or a symbol, by reference designator
+//   #U3                 a part: a footprint or a symbol, by reference designator (letters, digits, _ + -)
 //   #U3.9               its pad (or pin) 9, numbered as KiCad numbers it: 9, A4, EP
 //   #net:VIN            a net by name, JSON-quoted when it holds whitespace, a quote, a comma, '@' or '#'
 //   #net:VIN@x40.1y21.6 a board's copper of that net at a point
@@ -11,7 +11,7 @@
 // A token is `<file>#<selectors>`, as a STEP token is: several selectors are comma-joined after one
 // '#', split outside quotes, so a point is comma-free.
 
-const REF_SOURCE = "[A-Za-z][A-Za-z0-9_]*";
+const REF_SOURCE = "[A-Za-z_][A-Za-z0-9_+-]*";
 const PAD_SOURCE = "[A-Za-z0-9_+-]+";
 const NUMBER_SOURCE = "-?\\d+(?:\\.\\d+)?";
 const PART_RE = new RegExp(`^(${REF_SOURCE})$`);
@@ -170,7 +170,8 @@ export function parseBoardRefToken(token) {
     path = text.slice(0, hash);
     rest = text.slice(hash);
   }
-  if (!rest.startsWith("#") || /\s/.test(rest)) return null;
+  // Whitespace belongs only inside a quoted net name: every selector is checked whole below.
+  if (!rest.startsWith("#")) return null;
   const selectors = [];
   for (const piece of splitSelectors(rest.slice(1))) {
     const parsed = parseBoardRefSelector(piece);
