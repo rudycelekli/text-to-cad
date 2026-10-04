@@ -145,7 +145,7 @@ it('a plot with no index (a harness) opens as a picture and nothing else: no pan
   expect(panels).toEqual(['Show files']);
   const inPane = within(pane);
   expect(inPane.queryByRole('group', { name: 'Interaction tools' })).toBeNull();
-  for (const name of ['Orbit', 'Draw', 'Select', 'Measure', 'Preview', 'Display settings', 'Zoom in', 'Reset Zoom', 'Take snapshot']) {
+  for (const name of ['Orbit', 'Draw', 'Select', 'Measure', 'Preview', 'Display', 'Zoom in', 'Reset Zoom', 'Take snapshot']) {
     expect(inPane.queryByRole('button', { name }), name).toBeNull();
   }
   expect(pane.querySelector('[data-quick-edit]')).toBeNull();
@@ -208,6 +208,8 @@ it('a board with its index has Select and Measure, its parts and nets, and hands
   expect(within(tools).getByRole('button', { name: 'Select' }).getAttribute('aria-pressed')).toBe('true');
   expect(within(tools).getAllByRole('button').map((button) => button.getAttribute('aria-label'))).toEqual(['Select', 'Draw', 'Measure']);
   for (const name of ['Orbit', 'Explode', 'Clip', 'Position', 'Preview']) expect(inPane.queryByRole('button', { name }), name).toBeNull();
+  // A board drawn layer by layer has its Display dropdown in the navbar, as a 3D view does.
+  expect(inPane.getByRole('button', { name: 'Display' })).not.toBeNull();
   // The tree: parts by kind, then nets, then what KiCad reported.
   expect(inPane.getByRole('button', { name: 'Parts' })).not.toBeNull();
   expect(inPane.getByRole('button', { name: 'Nets' })).not.toBeNull();
@@ -290,7 +292,7 @@ it('a schematic with its index has Select alone, its symbols and nets, and hands
   const tools = await inPane.findByRole('group', { name: 'Interaction tools' });
   // A distance or a sketch on a schematic's layout means nothing to the design: no Measure, no Draw.
   expect(within(tools).getAllByRole('button').map((button) => button.getAttribute('aria-label'))).toEqual(['Select']);
-  expect(inPane.queryByRole('button', { name: 'Display settings' })).toBeNull();
+  expect(inPane.queryByRole('button', { name: 'Display' })).toBeNull();
   expect(inPane.getByRole('list', { name: 'Schematic' })).not.toBeNull();
   expect(inPane.queryByRole('button', { name: 'Checks' })).toBeNull();
   await act(async () => { inPane.getByRole('button', { name: 'Expand ICs' }).click(); });

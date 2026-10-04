@@ -283,7 +283,7 @@ plot without one is the picture alone.
   pane's size too; the sketch goes with a Quick Edit as the view with its ink. A host's or the
   agent's selection while it is up shows under the ink and leaves the sketch alone, and a
   capture never carries the hover.
-- **Display** (the navbar's Settings, one **Board** section): **View from** Top or Bottom (the
+- **Display** (the navbar's Display, one **Board** section): **View from** Top or Bottom (the
   board mirrored, its bottom layers drawn over its top), **Layers** (All layers, Copper,
   Silkscreen and fab) and **Copper pours** on or off — a pour hides the tracks under it. KiCad
   drew every layer; this only chooses among them. Kept with the file's view.
