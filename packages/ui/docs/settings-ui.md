@@ -270,11 +270,14 @@ plot without one is the picture alone.
   tracks** (via centres and track ends) and **Edges and holes**. Each measurement is a row:
   its distance and what its two ends were, dx and dy on hover. It is kept, toggled and cleared
   as a STEP's Measure is, Escape included; a second press on its first point (a double-click's)
-  measures nothing.
+  measures nothing; a new revision of the board clears the measurements, taken on the board as
+  it was.
 - **Draw** is the shared drawing editor laid over the board, its Drawing panel and Copy Drawing
   as a STEP's. While it is up the editor pans and zooms and the board follows it
   (`board/boardViewLock.js`), so ink stays on what it was drawn over — through a change of the
-  pane's size too; the sketch goes with a Quick Edit as the view with its ink.
+  pane's size too; the sketch goes with a Quick Edit as the view with its ink. A host's or the
+  agent's selection while it is up shows under the ink and leaves the sketch alone, and a
+  capture never carries the hover.
 - **Display** (the navbar's Settings, one **Board** section): **View from** Top or Bottom (the
   board mirrored, its bottom layers drawn over its top), **Layers** (All layers, Copper,
   Silkscreen and fab) and **Copper pours** on or off — a pour hides the tracks under it. KiCad

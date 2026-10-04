@@ -134,7 +134,11 @@ function PlotSurface({ view, data }) {
     onViewMoved: rememberView, noun: words.noun, drawView,
     overlay: inspector.available ? inspector.paintOverlay : null, picking: inspector.available ? inspector.picking : null
   });
-  const { canvasRef, capture, containerRef, dragging, fit, thumbnail } = plotView;
+  const { canvasRef, containerRef, dragging, fit, thumbnail } = plotView;
+  // A capture is the view as it stands, without the hover under a pointer that has moved on to ask for it.
+  const { dropHover } = inspector;
+  const { capture: captureView } = plotView;
+  const capture = useCallback(() => { dropHover(); return captureView(); }, [dropHover, captureView]);
   viewParts.current = { transformRef: plotView.transformRef, requestPaint: plotView.requestPaint, canvasRef };
   const drawing = inspector.available && inspector.tool === BOARD_TOOL.DRAW;
   const boardDrawing = useBoardDrawing({ active: drawing, transformRef: plotView.transformRef, setView: plotView.setView, paintNow: plotView.paintNow,

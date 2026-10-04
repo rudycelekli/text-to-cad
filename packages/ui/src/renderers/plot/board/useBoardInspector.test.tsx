@@ -82,3 +82,39 @@ it('a check in focus stays on that check in a new revision, wherever it is liste
   expect(view.result.current.finding).toBeNull();
   expect(view.result.current.selection).toEqual([]);
 });
+
+it('a new revision clears the measurements: they were taken on the board as it was', () => {
+  const view = mount();
+  act(() => view.result.current.chooseTool(BOARD_TOOL.MEASURE));
+  tap(view, 30, 30); tap(view, 370, 270); tap(view, 30, 30);
+  expect(view.result.current.measurements).toHaveLength(1);
+  view.rerender({ plot: plotOf(board()) });
+  expect(view.result.current.measurements).toEqual([]);
+  expect(view.result.current.measureStart).toBeNull();
+});
+
+it('a host selecting while Draw is up leaves the sketch alone: Draw stays up', () => {
+  const view = mount();
+  act(() => view.result.current.chooseTool(BOARD_TOOL.DRAW));
+  act(() => view.result.current.select(['#R1']));
+  expect(view.result.current.tool).toBe(BOARD_TOOL.DRAW);
+  expect(view.result.current.selection).toEqual(['#R1']);
+});
+
+it('a capture leaves out the hover: the view is drawn without it once dropped', () => {
+  const view = mount();
+  const strokes: string[] = [];
+  const ctx = new Proxy({} as Record<string | symbol, unknown>, {
+    get: (target, key) => (key in target ? target[key] : () => {}),
+    set: (target, key, value) => { if (key === 'strokeStyle') strokes.push(String(value)); target[key] = value; return true; },
+  });
+  const frame = { transform: { scale: 10, offsetX: 0, offsetY: 0 }, pixelRatio: 1, width: 400, height: 300 };
+  act(() => view.result.current.picking.onHover({ x: 141, y: 200 }, {}));
+  view.result.current.paintOverlay(ctx, frame);
+  expect(strokes).toContain('rgba(141, 197, 255, 0.55)');
+  strokes.length = 0;
+  view.result.current.dropHover();
+  view.result.current.paintOverlay(ctx, frame);
+  expect(strokes).not.toContain('rgba(141, 197, 255, 0.55)');
+});
+

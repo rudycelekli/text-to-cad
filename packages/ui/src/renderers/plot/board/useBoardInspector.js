@@ -64,9 +64,13 @@ export function useBoardInspector({ plot, transformRef, requestPaint, canvasRef,
 
   // A new revision of the board keeps what still names something on it — the selection, and the
   // check in focus where KiCad still reports it (found again by what it says, not where it was).
+  // Measurements are distances on the board as it was, so they go, unfinished or not.
   const findingsRef = useRef(index?.findings ?? EMPTY);
   useEffect(() => {
     if (!index) return;
+    setMeasurements((current) => (current.length ? EMPTY : current));
+    setMeasureStart(null);
+    draftRef.current = null;
     setSelection((current) => {
       const kept = current.filter((selector) => index.resolve(selector));
       return kept.length === current.length ? current : kept;
@@ -152,7 +156,9 @@ export function useBoardInspector({ plot, transformRef, requestPaint, canvasRef,
   /** Select what `selectors` name on this document (what names nothing here is left out); `add` toggles each. */
   const select = useCallback((selectors, { add = false, finding: findingIndex = null } = {}) => {
     const valid = (Array.isArray(selectors) ? selectors : [selectors]).map((selector) => index?.resolve(selector)?.selector).filter(Boolean);
-    switchTool(BOARD_TOOL.SELECT);
+    // Only a host or the agent selects while Draw is up (the person's presses are the sketch's): the
+    // selection shows under the ink, and the sketch stays.
+    if (toolRef.current !== BOARD_TOOL.DRAW) switchTool(BOARD_TOOL.SELECT);
     setFocusedFinding(findingIndex);
     setSelection((current) => {
       if (!add) return valid.length ? [...new Set(valid)] : EMPTY;
@@ -162,6 +168,8 @@ export function useBoardInspector({ plot, transformRef, requestPaint, canvasRef,
     });
   }, [index, switchTool]);
   const clear = useCallback(() => { setSelection(EMPTY); setFocusedFinding(null); }, []);
+  /** Forget the hover, for a capture: a picture of the view shows what is selected, not where the pointer was. */
+  const dropHover = useCallback(() => { hoverRef.current = null; }, []);
 
   // ---- the pointer ------------------------------------------------------------
   const picking = useMemo(() => ({
@@ -244,6 +252,6 @@ export function useBoardInspector({ plot, transformRef, requestPaint, canvasRef,
   return {
     available: Boolean(index), document: index?.document ?? null, index, tool, chooseTool, selectMode, setSelectMode, measureMode, setMeasureMode,
     selection, resolved, finding, focusedFinding, select, clear, picking, paintOverlay, copyText, copyRef,
-    measurements: measured, measureStart, removeMeasurement, clearMeasure, escape,
+    measurements: measured, measureStart, removeMeasurement, clearMeasure, escape, dropHover,
   };
 }
