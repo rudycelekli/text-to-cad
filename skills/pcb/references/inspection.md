@@ -43,7 +43,9 @@ board.at(12, 8)                                     # what is at a point
 
 A file before the `#` must name the board you read; a reference to another file is refused,
 as are a part, pad or net the board does not have (the message lists what it does have) and
-copper nowhere near the point (it names the nearest). A reference names the board as it was
+copper nowhere near the point (it names the nearest). A number several pads share (a USB
+connector's four `SH` shield pads, a regulator's tab and pin both `2`) resolves to the first of
+them; `part.pads` lists every one, and the person's point, when they gave one, says which. A reference names the board as it was
 when the person picked: if you have rebuilt since, resolve against the new board and check it
 still names what they meant.
 
