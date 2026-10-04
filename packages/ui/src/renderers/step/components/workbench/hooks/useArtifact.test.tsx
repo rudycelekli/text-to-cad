@@ -12,7 +12,7 @@ afterEach(() => { cleanup(); vi.useRealTimers(); });
 // A viewer server for one STEP: its catalog (the file and whatever is beside it) and its
 // artifact status, which a build somebody else started holds at `compiling`.
 function workspace({ tree = 'tree-1' } = {}) {
-  const server = { tree, siblings: [] as string[], state: 'compiling', artifactReads: 0, catalogReads: 0 };
+  const server = { tree, siblings: [] as string[], state: 'compiling', error: '', errorType: '', artifactReads: 0, catalogReads: 0 };
   const fetch = async (url: string) => {
     const { pathname } = new URL(url, 'http://viewer.test');
     let body: unknown;
@@ -25,7 +25,8 @@ function workspace({ tree = 'tree-1' } = {}) {
       ] };
     } else if (pathname === '/__cad/artifact') {
       server.artifactReads += 1;
-      body = { ok: true, state: server.state, runId: 'peer-run' };
+      body = { ok: true, state: server.state, runId: 'peer-run',
+        ...(server.error ? { error: server.error, errorType: server.errorType } : {}) };
     } else throw new Error(`unexpected ${pathname}`);
     return { ok: true, status: 200, headers: new Headers(), json: async () => body };
   };
@@ -81,5 +82,18 @@ it('follows a peer\'s build of a model not yet on screen until it ends, then rea
   const settled = server.artifactReads;
   await elapse(3000);
   expect(server.artifactReads).toBe(settled);
+  client.dispose();
+});
+
+it('hands on why a compile failed, so a file that refused to be read is told apart (#529)', async () => {
+  const { server, client } = workspace({ tree: '' });
+  server.state = 'failed';
+  server.error = "[Errno 13] Permission denied: 'car.step'";
+  server.errorType = 'PermissionError';
+  const { result } = renderHook(() => useStepArtifact(client));
+  await elapse(10);
+  expect(result.current.status).toBe('failed');
+  expect(result.current.error).toBe(server.error);
+  expect(result.current.failure).toEqual({ kind: 'compile', errorType: 'PermissionError' });
   client.dispose();
 });
