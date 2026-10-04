@@ -21,7 +21,7 @@ from tests.python.support.paths import add_repo_path
 add_repo_path("packages/cadgen/src")
 
 from cadgen.kicad import sexpr  # noqa: E402
-from cadgen.kicad.board_index import Copper, Net, Pad, Part, Point, read_board, read_index  # noqa: E402
+from cadgen.kicad.board_index import BoardView, Copper, Net, Pad, Part, Point, read_board, read_index, script_frame  # noqa: E402
 from cadgen.kicad.design import Board  # noqa: E402
 from cadgen.kicad.project import project_texts  # noqa: E402
 
@@ -64,6 +64,17 @@ class BoardIndexTest(unittest.TestCase):
         board.place(r3, at=(-12, -8), rotation=30, side="bottom")
         board.place(u2, at=(12, 8), rotation=45)
         board.track(out, [amp["OUT"], r1[2]], width=0.3)
+        board.arc(vin, start=(-18, -2), mid=(-15, 1), end=(-12, -2), width=0.25, layer="B.Cu")
+        # A square cutout, x 14..18, y -14..-10, its corners microns apart as KiCad's own
+        # library footprints leave theirs (KiCad's page frame: y down, the board's centre at 148.5, 105).
+        for number, (start, end) in enumerate((
+            ((162.5, 115), (166.5, 115)), ((166.5, 115.002), (166.5, 119)),
+            ((166.501, 119), (162.5, 119)), ((162.5, 119), (162.5, 115.003)),
+        )):
+            board.raw(
+                f'(gr_line (start {start[0]} {start[1]}) (end {end[0]} {end[1]}) (stroke (width 0.05) (type default))'
+                f' (layer "Edge.Cuts") (uuid "00000000-0000-4000-8000-00000000000{number}"))'
+            )
         board.via(gnd, at=(0, -8))
         board.zone(gnd, layers=["B.Cu"])
         cls.hole_line = sys._getframe().f_lineno + 1
@@ -119,6 +130,12 @@ class BoardIndexTest(unittest.TestCase):
         xs = [x for x, _ in part.outline]
         self.assertAlmostEqual(max(xs) - min(xs), 3.0 + 0.8, places=6)
         self.assertEqual(self.view.resolve("#H1").script, f"{Path(__file__).name}:{self.hole_line}")
+
+    def test_the_outline_closes_as_kicad_chains_it(self) -> None:
+        # KiCad joins outline segments whose ends are within 0.01 mm: the cutout is a hole in the board.
+        self.assertEqual(sorted((len(line), line[0] == line[-1]) for line in self.view.outline), [(5, True), (5, True)])
+        self.assertFalse(self.view.at(16, -12).on_board)
+        self.assertTrue(self.view.at(16, -6).on_board)
 
     def test_a_pad_and_a_net_resolve_with_what_is_on_them(self) -> None:
         pad = self.view.resolve("#U1.2")
@@ -189,6 +206,14 @@ class BoardIndexTest(unittest.TestCase):
         self.assertEqual(index.item_ref(sexpr.value(silk, "uuid")), "#R1")
         self.assertEqual(index.item_ref(sexpr.value(segment, "uuid"), at=(1.5, 2.25)), "#net:TX/RX@x1.5y2.25")
         self.assertIsNone(index.item_ref(sexpr.value(sexpr.find(tree, "gr_line"), "uuid")))
+        # KiCad's DRC places an arc at its centre, off its copper: the plot's reference names its middle.
+        from cadgen.kicad.plot import _findings
+
+        centre = (148.5 - 15, 105 + 2)
+        report = [("drc", "warning", "track_dangling", "Track has unconnected end", (("Track (arc) [VIN] on B.Cu", sexpr.value(sexpr.find(tree, "arc"), "uuid"), centre),))]
+        [item] = _findings(report, index)[0].items
+        self.assertEqual((item.ref, item.at), ("#net:VIN@x-15y1", centre))
+        self.assertEqual([(found.kind, found.arc) for found in self.view.resolve(item.ref).items], [("track", True)])
 
 
 class OlderBoardTest(unittest.TestCase):
@@ -213,6 +238,28 @@ class OlderBoardTest(unittest.TestCase):
         self.assertEqual(index.origin, (100.0, 100.0))
         # Pad 1 at (-1, 0) of a footprint turned a quarter turn lands 1 mm below it (y down).
         self.assertTrue(math.isclose(part.pads[0].at[0], 110, abs_tol=1e-9) and math.isclose(part.pads[0].at[1], 91, abs_tol=1e-9))
+
+    def test_a_kicad_5_board_reads_its_modules_and_arcs(self) -> None:
+        # KiCad 5 wrote a footprint as a module, and an arc as its centre, its start and an angle:
+        # this outline's right side bulges out from (110, 80) round (120, 90) to (110, 100).
+        text = """(kicad_pcb (version 20171130) (host pcbnew 5.1.9)
+          (layers (0 F.Cu signal) (31 B.Cu signal) (44 Edge.Cuts user))
+          (setup (aux_axis_origin 100 100))
+          (net 0 "") (net 1 GND)
+          (module R_0603 (layer F.Cu) (at 104 90 90)
+            (fp_text reference R1 (at 0 -1.43 90) (layer F.SilkS))
+            (fp_text value 10k (at 0 1.43 90) (layer F.Fab))
+            (pad 1 smd rect (at -0.8 0 90) (size 0.8 0.95) (layers F.Cu F.Paste F.Mask) (net 1 GND)))
+          (gr_line (start 100 80) (end 110 80) (layer Edge.Cuts) (width 0.1))
+          (gr_arc (start 110 90) (end 110 80) (angle 180) (layer Edge.Cuts) (width 0.1))
+          (gr_line (start 110 100) (end 100 100) (layer Edge.Cuts) (width 0.1))
+          (gr_line (start 100 100) (end 100 80) (layer Edge.Cuts) (width 0.1)))"""
+        index = read_index(text)
+        [part] = index.parts
+        self.assertEqual((part.ref, part.value, [(pad.number, pad.net) for pad in part.pads]), ("R1", "10k", [("1", "GND")]))
+        view = BoardView(Path("old.kicad_pcb"), index.mapped(script_frame(index.origin)))
+        self.assertTrue(view.at(15, 10).on_board)
+        self.assertFalse(view.at(18, 18).on_board)
 
 
 if __name__ == "__main__":

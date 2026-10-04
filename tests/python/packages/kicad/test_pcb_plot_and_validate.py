@@ -21,6 +21,12 @@ from tests.python.support.paths import add_repo_path
 from tests.python.support.tmp_root import generated_cad_directory
 
 CADGEN_SRC = add_repo_path("packages/cadgen/src")
+# A dimension above the board on User.Drawings, the scratch layer a draft's ratsnest is plotted on.
+DIMENSION = (
+    """board.raw('(dimension (type aligned) (layer "Dwgs.User") (uuid "00000000-0000-4000-8000-0000000000d1")"""
+    """ (pts (xy 130 85) (xy 165 85)) (height -2) (format (units 3) (units_format 1) (precision 4))"""
+    """ (style (thickness 0.1) (arrow_length 1.27) (text_position_mode 0) (extension_height 0.58642) (extension_offset 0.5)))')"""
+)
 
 
 class PcbPlotAndValidateTest(unittest.TestCase):
@@ -31,7 +37,7 @@ class PcbPlotAndValidateTest(unittest.TestCase):
         env = dict(os.environ, CADGEN_DAEMON="0", PYTHONPATH=str(CADGEN_SRC))
         for name, routed in (("finished", True), ("draft", False)):
             (cls.folder / name).mkdir()
-            (cls.folder / name / "blinky.py").write_text(board_source(route_led=routed), encoding="utf-8")
+            (cls.folder / name / "blinky.py").write_text(board_source(route_led=routed, extra="" if routed else DIMENSION), encoding="utf-8")
             built = subprocess.run([sys.executable, "blinky.py"], cwd=cls.folder / name, env=env, capture_output=True, text=True, timeout=600)
             if built.returncode != 0:
                 raise AssertionError(built.stderr)
@@ -73,9 +79,11 @@ class PcbPlotAndValidateTest(unittest.TestCase):
         copper = {layer["id"]: layer for layer in sheet["layers"] if layer["kind"] == "copper"}
         self.assertLess(len(copper["B.Cu"]["unpoured"]), len(copper["B.Cu"]["svg"]))
         self.assertNotIn("unpoured", copper["F.Cu"])
-        # The ratsnest is drawn in the grey KiCad gives the scratch layer, on a layer of its own.
+        # The ratsnest is drawn in the grey KiCad gives the scratch layer, on a layer of its own:
+        # its one line, and nothing else the board draws there (the draft's dimension).
         ratsnest = next(layer for layer in draft["sheets"][0]["layers"] if layer["id"] == "ratsnest")
         self.assertIn("#C2C2C2", ratsnest["svg"])
+        self.assertEqual(ratsnest["svg"].count("<path"), 1)
 
     def test_the_index_lands_on_the_sheet_kicad_plotted(self) -> None:
         from cadgen.kicad import sexpr

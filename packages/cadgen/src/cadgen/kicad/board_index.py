@@ -30,8 +30,11 @@ its angle absolute), a bottom-side footprint's already flipped; a pad's shape
 is a polygon (rect, roundrect, oval, circle, trapezoid, chamfered rect; a
 custom pad's is the hull of its primitives); arcs and circles are sampled; a
 part's outline is its courtyard (else the box around its pads and fabrication
-drawing). Net names are unescaped as KiCad displays them (``TX/RX``, never
-``TX{slash}RX``); a net's class comes from the project file beside the board.
+drawing); the outline's segments are joined where their ends meet within
+KiCad's own chaining epsilon. Net names are unescaped as KiCad displays them
+(``TX/RX``, never ``TX{slash}RX``); a net's class comes from the project file
+beside the board. Older boards KiCad 10 opens read too: numbered nets, ``fp_text``
+references, and a KiCad 5 board's modules and its arcs drawn by centre and angle.
 """
 
 from __future__ import annotations
@@ -41,6 +44,7 @@ import fnmatch
 import json
 import math
 import re
+from collections import deque
 from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Callable, Iterable, Mapping, Sequence
@@ -70,7 +74,10 @@ XY = tuple[float, float]
 
 #: How far beyond a piece of copper a ``#net:NAME@x..y..`` point may land and still name it, mm.
 COPPER_TOLERANCE = 0.1
-_JOIN = 1e-4  # endpoints closer than this are one point when segments are chained, mm
+_JOIN = 1e-4  # a polygon's point this close to the one before it is that point, mm
+# KiCad's outline chaining epsilon (DEFAULT_CHAINING_EPSILON_MM): segments whose ends are this
+# close are one outline. Its own library footprints leave gaps of microns in their cutouts.
+_CHAIN = 0.01
 _ARC_STEP = math.radians(10)
 _CIRCLE_SEGMENTS = 24
 _CORNER_SEGMENTS = 4
@@ -317,7 +324,7 @@ class BoardIndex:
     origin: XY
     findings: tuple[Finding, ...] = ()
     # Every item's uuid: what it is, for a finding's item ("pad", ref, number), ("part", ref),
-    # ("track"|"via", net). Frame-free.
+    # ("track", net, index into tracks), ("via", net). Frame-free.
     uuids: Mapping[str, tuple] = field(default_factory=dict, repr=False, compare=False)
 
     @property
@@ -430,6 +437,17 @@ class BoardIndex:
         if found[0] in ("track", "via") and found[1] and at is not None:
             return _selector("copper", net=found[1], at=at)
         return None
+
+    def on_copper(self, uuid: str | None, at: XY) -> XY:
+        """``at`` (in this frame), or the middle of the track with ``uuid`` when ``at`` is off its
+        copper: where a reference to the track's copper is resolved. KiCad's report places an arc
+        at its centre, which no copper of the arc is near."""
+        found = self.uuids.get(str(uuid or ""))
+        if found is not None and found[0] == "track" and len(found) > 2:
+            track = self.tracks[found[2]]
+            if _reach(track, at) > 0:
+                return track.points[len(track.points) // 2]
+        return at
 
 
 def _selector(kind: str, **fields) -> str | None:
@@ -576,36 +594,67 @@ def _polygon_distance(point: XY, polygon: Sequence[XY]) -> float:
     return _polyline_distance(point, [*polygon, polygon[0]])
 
 
-def _close(a: XY, b: XY) -> bool:
-    return abs(a[0] - b[0]) <= _JOIN and abs(a[1] - b[1]) <= _JOIN
+def _close(a: XY, b: XY, within: float = _JOIN) -> bool:
+    return abs(a[0] - b[0]) <= within and abs(a[1] - b[1]) <= within
 
 
 def _chain(pieces: list[list[XY]]) -> list[list[XY]]:
-    """Open polylines joined end to end where they meet; a closed result repeats its first point."""
+    """Open polylines joined end to end, as KiCad chains an outline's segments: from each line's
+    end, on to the piece whose end is nearest it within KiCad's chaining epsilon (``_CHAIN``),
+    until none is; then, if that end meets the line's start, the line is closed (a closed line
+    repeats its first point), else it grows from its start the same way.
+
+    Each piece's ends are filed in a grid of ``_CHAIN`` cells, so a line's end meets only its
+    neighbours: linear in the pieces, which an outline imported from a drawing has thousands
+    of, in no order.
+    """
     pending = [list(piece) for piece in pieces if len(piece) >= 2]
+    cells: dict[tuple[int, int], list[int]] = {}
+
+    def cell(point: XY) -> tuple[int, int]:
+        return math.floor(point[0] / _CHAIN), math.floor(point[1] / _CHAIN)
+
+    for index, piece in enumerate(pending):
+        for end in (piece[0], piece[-1]):
+            cells.setdefault(cell(end), []).append(index)
+    used = [False] * len(pending)
+
+    def nearest(point: XY) -> tuple[int, bool] | None:
+        """The unused piece with an end nearest ``point`` (the first in the outline's order of
+        those as near), and whether that end is its start."""
+        x, y = cell(point)
+        best = None
+        for index in sorted({index for dx in (-1, 0, 1) for dy in (-1, 0, 1) for index in cells.get((x + dx, y + dy), ())}):
+            if used[index]:
+                continue
+            for at_start, end in ((True, pending[index][0]), (False, pending[index][-1])):
+                if _close(point, end, _CHAIN):
+                    distance = (point[0] - end[0]) ** 2 + (point[1] - end[1]) ** 2
+                    if best is None or distance < best[0]:
+                        best = (distance, index, at_start)
+        return None if best is None else best[1:]
+
+    def closed(line) -> bool:
+        return len(line) > 2 and _close(line[0], line[-1], _CHAIN)
+
     lines: list[list[XY]] = []
-    while pending:
-        line = pending.pop(0)
-        grown = True
-        while grown and not (len(line) > 2 and _close(line[0], line[-1])):
-            grown = False
-            for index, piece in enumerate(pending):
-                if _close(line[-1], piece[0]):
-                    line.extend(piece[1:])
-                elif _close(line[-1], piece[-1]):
-                    line.extend(reversed(piece[:-1]))
-                elif _close(line[0], piece[-1]):
-                    line[:0] = piece[:-1]
-                elif _close(line[0], piece[0]):
-                    line[:0] = list(reversed(piece[1:]))
-                else:
-                    continue
-                pending.pop(index)
-                grown = True
-                break
-        if len(line) > 2 and _close(line[0], line[-1]):
-            line[-1] = line[0]
-        lines.append(line)
+    for first, start in enumerate(pending):
+        if used[first]:
+            continue
+        used[first] = True
+        line = deque(start)
+        while (found := nearest(line[-1])) is not None:
+            index, at_start = found
+            used[index] = True
+            line.extend(pending[index][1:] if at_start else reversed(pending[index][:-1]))
+        while not closed(line) and (found := nearest(line[0])) is not None:
+            index, at_start = found
+            used[index] = True
+            line.extendleft(pending[index][1:] if at_start else reversed(pending[index][:-1]))
+        joined = list(line)
+        if closed(joined):
+            joined[-1] = joined[0]
+        lines.append(joined)
     return lines
 
 
@@ -631,6 +680,17 @@ def _pts(node: list | None) -> list[XY]:
     return out
 
 
+def _legacy_arc(center: XY, start: XY, angle: float) -> tuple[XY, XY, XY]:
+    """A KiCad 5 arc, ``(start <centre>) (end <start>) (angle <degrees>)``, as its start, middle
+    and end: KiCad 5 turned its start point about the centre by ``-angle``."""
+
+    def turned(degrees: float) -> XY:
+        x, y = _rotate(start[0] - center[0], start[1] - center[1], degrees)
+        return center[0] + x, center[1] + y
+
+    return start, turned(-angle / 2), turned(-angle)
+
+
 def _graphic(node: list) -> tuple[list[XY], bool] | None:
     """A graphic item (``gr_*``, ``fp_*`` or a custom pad's primitive) as points, and whether
     they close on themselves."""
@@ -641,6 +701,8 @@ def _graphic(node: list) -> tuple[list[XY], bool] | None:
         return ([start, end], False) if start and end else None
     if kind == "arc":
         start, mid, end = (_pair(sexpr.find(node, key)) for key in ("start", "mid", "end"))
+        if start and end and mid is None and sexpr.value(node, "angle") is not None:
+            start, mid, end = _legacy_arc(start, end, _number(sexpr.value(node, "angle")))
         return (_arc(start, mid, end), False) if start and mid and end else None
     if kind == "circle":
         center, end = _pair(sexpr.find(node, "center")), _pair(sexpr.find(node, "end"))
@@ -1046,7 +1108,7 @@ def read_index(text: str | list, *, project: Path | None = None) -> BoardIndex:
     vias: list[Via] = []
     for node in tree[1:]:
         head = sexpr.head(node)
-        if head == "footprint":
+        if head in ("footprint", "module"):  # a KiCad 5 board's footprints are modules
             part, part_holes, part_zones, part_edges = _read_footprint(node, table, copper, uuids)
             parts.append(part)
             holes.extend(part_holes)
@@ -1062,7 +1124,7 @@ def read_index(text: str | list, *, project: Path | None = None) -> BoardIndex:
             net = _net(node, table)
             tracks.append(Track(net=net, layer=_layer_of(node) or "", width=_number(sexpr.value(node, "width")), points=tuple(points), arc=head == "arc"))
             if sexpr.value(node, "uuid"):
-                uuids[str(sexpr.value(node, "uuid"))] = ("track", net)
+                uuids[str(sexpr.value(node, "uuid"))] = ("track", net, len(tracks) - 1)
         elif head == "via":
             at = _pair(sexpr.find(node, "at"))
             if at is None:
@@ -1134,18 +1196,17 @@ class BoardView:
         #: Edge.Cuts as polylines; a closed one repeats its first point.
         self.outline: tuple[tuple[XY, ...], ...] = index.outline
         self._parts = {part.ref: part for part in index.parts}
-        nets = []
-        for name, netclass in index.nets:
-            nets.append(Net(
-                name=name,
-                netclass=netclass,
-                pads=tuple(pad for part in index.parts for pad in part.pads if pad.net == name),
-                tracks=tuple(track for track in index.tracks if track.net == name),
-                vias=tuple(via for via in index.vias if via.net == name),
-                zones=tuple(zone for zone in index.zones if zone.net == name),
-            ))
-        self.nets: tuple[Net, ...] = tuple(nets)
-        self._nets = {net.name: net for net in nets}
+        # Everything on each net, in one pass over the board (a pass per net is quadratic).
+        on: dict[str, tuple[list, list, list, list]] = {name: ([], [], [], []) for name, _netclass in index.nets}
+        for slot, items in enumerate((index.pads, index.tracks, index.vias, index.zones)):
+            for item in items:
+                if item.net in on:
+                    on[item.net][slot].append(item)
+        self.nets: tuple[Net, ...] = tuple(
+            Net(name=name, netclass=netclass, pads=tuple(on[name][0]), tracks=tuple(on[name][1]), vias=tuple(on[name][2]), zones=tuple(on[name][3]))
+            for name, netclass in index.nets
+        )
+        self._nets = {net.name: net for net in self.nets}
 
     def __repr__(self) -> str:
         return f"BoardView({self.path.name}: {len(self.parts)} parts, {len(self.nets)} nets)"
@@ -1279,7 +1340,11 @@ def read_board(path: Path | str) -> BoardView:
     if not board.is_file():
         raise FileNotFoundError(f"{board} does not exist")
     try:
-        index = read_index(board.read_text(encoding="utf-8"), project=board.with_suffix(".kicad_pro"))
+        text = board.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        raise ValueError(f"{board.name} is not a readable KiCad board: it is not UTF-8 text") from None
+    try:
+        index = read_index(text, project=board.with_suffix(".kicad_pro"))
     except ValueError as error:
         raise ValueError(f"{board.name} is {error}") from None
     return BoardView(board.resolve(), index.mapped(script_frame(index.origin)))

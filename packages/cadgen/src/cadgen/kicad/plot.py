@@ -29,7 +29,8 @@ not show, at a known point, and its place in that layer's SVG is the offset
 origin). The payload's ``board`` is the board's index
 (:mod:`cadgen.kicad.board_index`) on that sheet, with ``origin``, the script's
 origin there, and ``findings``: everything the plot's one DRC run reported,
-each item with a board reference when it is a pad, a part's or copper.
+each item with a board reference when it is a pad, a part's or copper (KiCad
+reports an arc at its centre; its reference names the arc's middle).
 
 A schematic is one picture per sheet in KiCad's page order, the root first,
 and its ``schematic``: the schematic's index
@@ -131,13 +132,14 @@ def _copper_order(board: list) -> list[str]:
 
 
 def _clear_layer(node: list, layer: str) -> list:
-    """``node`` without any item drawn on ``layer`` (footprint children included)."""
+    """``node`` without any item drawn on ``layer``: graphics, text, dimensions, images, a
+    footprint's own (a footprint's fields included)."""
     kept: list = [node[0]]
     for child in node[1:]:
-        if isinstance(child, list) and child and sexpr.value(child, "layer") == layer and str(child[0]).startswith(("gr_", "fp_")):
-            continue
-        if isinstance(child, list) and child and child[0] == "footprint":
+        if isinstance(child, list) and child and child[0] in ("footprint", "module"):
             child = _clear_layer(child, layer)
+        elif isinstance(child, list) and child and sexpr.value(child, "layer") == layer:
+            continue
         kept.append(child)
     return kept
 
@@ -272,8 +274,12 @@ def _export(install, stage: Path, board: str, layers: list[str], folder: str) ->
 
 
 def _plotted(stage: Path, folder: str, token: str, layer: str) -> str:
-    """The SVG KiCad plotted of ``layer``, named after the user name the staged board gives it (``token``)."""
-    found = [path for path in (stage / folder).glob("*.svg") if path.name.endswith(f"-{token}.svg")]
+    """The SVG KiCad plotted of ``layer``, named after the user name the staged board gives it
+    (``token``) -- or, on a board too old to name its layers (KiCad 5), after the layer."""
+    svgs = list((stage / folder).glob("*.svg"))
+    found = [path for path in svgs if path.name.endswith(f"-{token}.svg")]
+    if not found:
+        found = [path for path in svgs if path.name.endswith(f"-{layer.replace('.', '_')}.svg")]
     if len(found) != 1:
         raise PlotError(f"KiCad's plot of the board is missing a layer ({layer})")
     return _strip_stamps(found[0].read_text(encoding="utf-8"))
@@ -342,7 +348,7 @@ def _decoded(path: Path, data: bytes) -> str:
 
 def _findings(report: list[tuple], index) -> tuple:
     """The DRC report's findings on the index (KiCad's frame), each item with a board reference to
-    what it names."""
+    what it names. KiCad places an arc at its centre: its reference names the arc's middle."""
     from cadgen.kicad.board_index import Finding, FindingItem, script_frame
 
     to_script = script_frame(index.origin)
@@ -350,7 +356,7 @@ def _findings(report: list[tuple], index) -> tuple:
         Finding(
             check=check, severity=severity, type=kind, description=description,
             items=tuple(
-                FindingItem(text=text, ref=index.item_ref(uuid, to_script(*at) if at else None), at=at)
+                FindingItem(text=text, ref=index.item_ref(uuid, to_script(*index.on_copper(uuid, at)) if at else None), at=at)
                 for text, uuid, at in items
             ),
         )
