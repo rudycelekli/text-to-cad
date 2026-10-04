@@ -101,7 +101,9 @@ def servo_power():
     # GCT's land pattern puts the receptacle's GND pads 0.19 mm from its own locating pegs.
     board.rule("""(rule "J1 land pattern" (constraint hole_clearance (min 0.15mm))
         (condition "A.memberOfFootprint('J1') && B.memberOfFootprint('J1')"))""")
-    board.zone(gnd, layers=["F.Cu", "B.Cu"])
+    # The receptacle's GND pads sit too close together for thermal spokes: the top pour meets them solid.
+    board.zone(gnd, layers=["F.Cu"], pads="solid")
+    board.zone(gnd, layers=["B.Cu"])
     board.text("SERVO PWR", at=(0, 14), size=1.2)
     board.autoroute()
     return board
