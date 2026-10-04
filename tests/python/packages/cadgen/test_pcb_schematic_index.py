@@ -22,6 +22,7 @@ from tests.python.support.kicad_schematics import (
     CONNECTIONS_NETLIST,
     HIERARCHY_NETS,
     HIERARCHY_SHEETS,
+    SchematicText,
     write_connections,
     write_hierarchy,
 )
@@ -211,6 +212,18 @@ class ConnectionsTest(unittest.TestCase):
         [power] = [label for label in index.labels if label.kind == "power"]
         self.assertEqual((power.text, power.net, power.at), ("+5V", "+5V", (76.2, 55.88)))
 
+    def test_a_label_on_a_long_wires_middle_names_it(self) -> None:
+        # A wire across most of the sheet, its middle far from its ends: a label there joins it.
+        with tempfile.TemporaryDirectory() as folder:
+            path = Path(folder) / "long.kicad_sch"
+            sheet = SchematicText("long", "long", paper="A3")
+            sheet.symbol("Test:R", (25.4, 30.48), "R1")
+            sheet.wire((25.4, 25.4), (279.4, 279.4))
+            sheet.label("FAR", (152.4, 152.4), "global_label")
+            path.write_text(sheet.text(), encoding="utf-8")
+            nets = {pin.selector: pin.net for pin in read_index(path).pins}
+        self.assertEqual((nets["#R1.1"], nets["#R1.2"]), ("FAR", None))
+
     def test_kicads_netlist_names_every_pin_and_what_is_wired_to_it(self) -> None:
         index = read_index(self.path, netlist=CONNECTIONS_NETLIST)
         nets = {pin.selector: pin.net for pin in index.pins}
@@ -238,9 +251,9 @@ class HierarchyTest(unittest.TestCase):
 
     def test_each_instance_of_a_sheet_is_a_sheet_named_as_its_plot(self) -> None:
         self.assertEqual([(sheet.name, sheet.path, sheet.file) for sheet in self.index.sheets], HIERARCHY_SHEETS)
-        self.assertEqual([sheet.title for sheet in self.index.sheets], ["Hier root", "", "Child", "Power", "", "Child"])
+        self.assertEqual([sheet.title for sheet in self.index.sheets], ["Hier root", "Child", "Child", "Power", "", ""])
         on = {part.ref: self.index.sheets[part.units[0].sheet].name for part in self.index.parts}
-        self.assertEqual(on, {"R1": "hier", "R2": "Left", "R3": "Right", "R4": "Left-Deep", "R5": "Right-Deep", "R6": "Power Stage"})
+        self.assertEqual(on, {"R1": "hier", "R2": "Left", "R3": "Right", "R4": "Left-Deep", "R5": "Right-Deep", "R6": "Power Stäge"})
         # One file, two instances: the same place on each sheet.
         self.assertEqual(self.index.parts[1].units[0].at, self.index.parts[2].units[0].at)
 
@@ -248,7 +261,7 @@ class HierarchyTest(unittest.TestCase):
         view = SchematicView(self.folder / "hier.kicad_sch", self.index)
         self.assertEqual({net.name: list(net.nodes) for net in view.nets if net.nodes}, HIERARCHY_NETS)
         # Unconnected pins and the floating label have no KiCad netlist to name them here.
-        self.assertEqual(view.net("/Power Stage/FLOAT").nodes, ())
+        self.assertEqual(view.net("/Power Stäge/FLOAT").nodes, ())
 
     def test_aligned_to_a_plots_sheets(self) -> None:
         aligned = self.index.aligned(["hier", "Right", "Missing"])

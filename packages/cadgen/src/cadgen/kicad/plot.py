@@ -31,26 +31,29 @@ origin). The payload's ``board`` is the board's index
 origin there, and ``findings``: everything the plot's one DRC run reported,
 each item with a board reference when it is a pad, a part's or copper.
 
-A schematic is one picture per sheet, the root first, and its ``schematic``:
-the schematic's index (:mod:`cadgen.kicad.schematic_index`) on those sheets --
-parts, pins, wires, labels and nets in each sheet's millimetres, the frame of
-its SVG, with KiCad's own net names from one netlist export.
+A schematic is one picture per sheet in KiCad's page order, the root first,
+and its ``schematic``: the schematic's index
+(:mod:`cadgen.kicad.schematic_index`) on those sheets -- parts, pins, wires,
+labels and nets in each sheet's millimetres, the frame of its SVG, with
+KiCad's own net names from one netlist export.
 
-Everything runs on a staged copy (``kicad-cli`` writes beside what it reads).
-The payload is derived data: cached in the store's ``drawing`` index, keyed by
-the document's bytes (a board's with its project and rules files; a
-schematic's: every sheet beside it and its project, which classes its nets),
-this module's scheme and the KiCad version.
+Everything runs on a staged copy (``kicad-cli`` writes beside what it reads)
+of the files a plot reads, each read once: a board with the project and rules
+beside it, a schematic with every sheet under its root (wherever it lies) and
+the project and symbol table beside the root. The payload is derived data:
+cached in the store's ``drawing`` index, keyed by those files' names and bytes
+(the same bytes KiCad plots), this module's scheme and the KiCad version.
 """
 
 from __future__ import annotations
 
 import hashlib
 import json
+import os
 import re
-import shutil
 import tempfile
-from dataclasses import replace
+import unicodedata
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from cadgen.kicad import sexpr
@@ -66,6 +69,9 @@ __all__ = [
 ]
 
 PLOT_SCHEMA_VERSION = 2
+# The derivation's own revision, in the cache key beside the schema version: a fix that changes
+# what a payload holds, not its shape, bumps it so the store never serves the old payloads.
+_REVISION = 2
 #: KiCad's default colour theme behind a board, and behind a schematic sheet.
 BOARD_BACKGROUND = "#001023"
 SCHEMATIC_BACKGROUND = "#F5F4EF"
@@ -265,35 +271,112 @@ def _export(install, stage: Path, board: str, layers: list[str], folder: str) ->
     )
 
 
-def _plotted(stage: Path, folder: str, token: str) -> str:
+def _plotted(stage: Path, folder: str, token: str, layer: str) -> str:
+    """The SVG KiCad plotted of ``layer``, named after the user name the staged board gives it (``token``)."""
     found = [path for path in (stage / folder).glob("*.svg") if path.name.endswith(f"-{token}.svg")]
     if len(found) != 1:
-        raise PlotError(f"KiCad's plot of the board is missing a layer ({token})")
+        raise PlotError(f"KiCad's plot of the board is missing a layer ({layer})")
     return _strip_stamps(found[0].read_text(encoding="utf-8"))
 
 
-def _board_payload(path: Path, install) -> dict:
-    from cadgen.kicad.board_index import Finding, FindingItem, read_index, script_frame
-    from cadgen.kicad.cli import run_kicad_cli
+@dataclass(frozen=True)
+class _Inputs:
+    """The files a plot is drawn from, each read once: the document, then every file KiCad reads
+    with it (absolute paths, and their bytes). The cache key is these files' and KiCad plots a
+    copy of these same bytes, so a key never names a picture of other ones."""
 
-    text = path.read_text(encoding="utf-8")
+    files: tuple[tuple[Path, bytes], ...]
+
+    @property
+    def document(self) -> Path:
+        return self.files[0][0]
+
+    def key(self) -> str:
+        """The files' names (relative to the document's folder, the document's own first) and bytes."""
+        digest = hashlib.sha256()
+        for path, data in self.files:
+            try:
+                name = Path(os.path.relpath(path, self.document.parent)).as_posix()
+            except ValueError:  # another drive
+                name = str(path)
+            digest.update(name.encode("utf-8") + b"\0" + hashlib.sha256(data).digest())
+        return digest.hexdigest()
+
+
+def _checked(path: Path) -> Path:
+    path = Path(path).resolve()
+    if path.suffix.lower() not in _SUFFIXES:
+        raise PlotError(f"{path.name} is not a KiCad board (.kicad_pcb) or schematic (.kicad_sch)")
+    if not path.is_file():
+        raise PlotError(f"{path.name} does not exist")
+    return path
+
+
+def _inputs(path: Path) -> _Inputs:
+    """What a plot of ``path`` reads: a board and the project and rules beside it (the DRC's
+    findings and the nets' classes read them); a schematic, every sheet under it wherever it
+    lies, and the project (which classes its nets) and symbol table beside it."""
+    from cadgen.kicad.schematic_index import hierarchy_files
+
     try:
-        tree = sexpr.parse(text)
+        if path.suffix.lower() == ".kicad_pcb":
+            files = [(path, path.read_bytes())]
+            for sibling in (path.with_suffix(".kicad_pro"), path.with_suffix(".kicad_dru")):
+                if sibling.is_file():
+                    files.append((sibling, sibling.read_bytes()))
+        else:
+            files = hierarchy_files(path)
+    except OSError as error:
+        raise PlotError(f"{path.name} could not be read ({error.strerror or error}): check that it exists and this user can read it") from None
+    except ValueError as error:  # a sheet that is not UTF-8 text
+        raise PlotError(str(error)) from None
+    return _Inputs(tuple(files))
+
+
+def _decoded(path: Path, data: bytes) -> str:
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise PlotError(f"{path.name} is not a readable KiCad board: it is not UTF-8 text") from None
+
+
+def _findings(report: list[tuple], index) -> tuple:
+    """The DRC report's findings on the index (KiCad's frame), each item with a board reference to
+    what it names."""
+    from cadgen.kicad.board_index import Finding, FindingItem, script_frame
+
+    to_script = script_frame(index.origin)
+    return tuple(
+        Finding(
+            check=check, severity=severity, type=kind, description=description,
+            items=tuple(
+                FindingItem(text=text, ref=index.item_ref(uuid, to_script(*at) if at else None), at=at)
+                for text, uuid, at in items
+            ),
+        )
+        for check, severity, kind, description, items in report
+    )
+
+
+def _board_payload(inputs: _Inputs, install) -> dict:
+    from cadgen.kicad.board_index import read_index
+    from cadgen.kicad.cli import run_kicad_cli
+    from cadgen.kicad.schematic_index import stage_files
+
+    path = inputs.document
+    try:
+        tree = sexpr.parse(_decoded(path, inputs.files[0][1]))
     except sexpr.SexprError as error:
         raise PlotError(f"{path.name} is not a readable KiCad board ({error})") from None
     if sexpr.head(tree) != "kicad_pcb":
         raise PlotError(f"{path.name} is not a KiCad board")
-    index = read_index(tree, project=path.with_suffix(".kicad_pro"))
     stack = _board_layers(tree)
     with tempfile.TemporaryDirectory(prefix="cadgen-kicad-plot-") as folder:
-        stage = Path(folder)
-        staged = stage / path.name
-        staged.write_text(text, encoding="utf-8")
-        for sibling in (path.with_suffix(".kicad_pro"), path.with_suffix(".kicad_dru")):
-            if sibling.is_file():
-                shutil.copy2(sibling, stage / sibling.name)
+        staged = stage_files(inputs.files, Path(folder))
+        stage = staged.parent
+        index = read_index(tree, project=staged.with_suffix(".kicad_pro"))
         # One DRC: what is still unconnected (the ratsnest), and every finding the viewer lists.
-        run_kicad_cli(install, ["pcb", "drc", "--format", "json", "-o", "drc.json", path.name], cwd=stage)
+        run_kicad_cli(install, ["pcb", "drc", "--format", "json", "-o", "drc.json", staged.name], cwd=stage)
         report = _drc_report(stage / "drc.json")
         unconnected = [finding for finding in report if finding[0] == "unconnected"]
         marked = _clear_layer(tree, _RATSNEST_LAYER) if unconnected else list(tree)  # a new list; children shared, never changed
@@ -316,45 +399,38 @@ def _board_payload(path: Path, install) -> dict:
         plotted = [layer for layer, _kind, _side in stack] + ([_RATSNEST_LAYER] if unconnected else []) + [_CALIBRATION_LAYER[1]]
         tokens = {layer: f"cadgenplot{number:02d}" for number, layer in enumerate(plotted)}
         _name_layers(marked, tokens)
+
+        def svg(folder: str, layer: str) -> str:
+            return _plotted(stage, folder, tokens[layer], layer)
+
         staged.write_text(sexpr.dumps(marked), encoding="utf-8")
-        _export(install, stage, path.name, plotted, "poured")
-        offset = _calibration(_plotted(stage, "poured", tokens[_CALIBRATION_LAYER[1]]), mark)
+        _export(install, stage, staged.name, plotted, "poured")
+        offset = _calibration(svg("poured", _CALIBRATION_LAYER[1]), mark)
         copper = [layer for layer, kind, _side in stack if kind == "copper"]
         bare, filled = _unpoured(marked)
         unpoured: dict[str, str] = {}
         if filled:
             staged.write_text(sexpr.dumps(bare), encoding="utf-8")
-            _export(install, stage, path.name, copper + [_CALIBRATION_LAYER[1]], "unpoured")
-            if _calibration(_plotted(stage, "unpoured", tokens[_CALIBRATION_LAYER[1]]), mark) != offset:
+            _export(install, stage, staged.name, copper + [_CALIBRATION_LAYER[1]], "unpoured")
+            if _calibration(svg("unpoured", _CALIBRATION_LAYER[1]), mark) != offset:
                 raise PlotError(f"KiCad placed {path.name} differently on its two plots")
-            unpoured = {layer: _drill_groups(_plotted(stage, "unpoured", tokens[layer]))[0] for layer in copper}
+            unpoured = {layer: _drill_groups(svg("unpoured", layer))[0] for layer in copper}
         layers = []
         drills: dict[str, None] = {}
         page = ""
         for layer, kind, side in stack + ([(_RATSNEST_LAYER, "ratsnest", "both")] if unconnected else []):
-            svg, holes = _drill_groups(_plotted(stage, "poured", tokens[layer]))
-            page = page or svg
+            drawn, holes = _drill_groups(svg("poured", layer))
+            page = page or drawn
             if kind == "copper":
                 drills.update(dict.fromkeys(holes))
-            entry = {"id": "ratsnest" if kind == "ratsnest" else layer, "kind": kind, "side": side, "svg": svg}
-            if layer in unpoured and unpoured[layer] != svg:
+            entry = {"id": "ratsnest" if kind == "ratsnest" else layer, "kind": kind, "side": side, "svg": drawn}
+            if layer in unpoured and unpoured[layer] != drawn:
                 entry["unpoured"] = unpoured[layer]
             layers.append(entry)
         if drills:
             layers.append({"id": "drills", "kind": "drill", "side": "both", "svg": _drill_layer(page, list(drills))})
     width, height = _svg_size(page)
-    to_script = script_frame(index.origin)
-    findings = tuple(
-        Finding(
-            check=check, severity=severity, type=kind, description=description,
-            items=tuple(
-                FindingItem(text=item_text, ref=index.item_ref(uuid, to_script(*at) if at else None), at=at)
-                for item_text, uuid, at in items
-            ),
-        )
-        for check, severity, kind, description, items in report
-    )
-    sheet = replace(index, findings=findings).mapped(lambda x, y: (x - offset[0], y - offset[1]))
+    sheet = replace(index, findings=_findings(report, index)).mapped(lambda x, y: (x - offset[0], y - offset[1]))
     return {
         "kind": "board",
         "sheets": [{"name": path.stem, "width": width, "height": height, "background": BOARD_BACKGROUND, "layers": layers}],
@@ -363,70 +439,50 @@ def _board_payload(path: Path, install) -> dict:
     }
 
 
-def _schematic_files(path: Path) -> list[Path]:
-    return sorted(candidate for candidate in path.parent.glob("*.kicad_sch") if candidate.is_file())
-
-
-def _schematic_payload(path: Path, install) -> dict:
+def _schematic_payload(inputs: _Inputs, install) -> dict:
     from cadgen.kicad.cli import run_kicad_cli
-    from cadgen.kicad.schematic_index import payload_index
+    from cadgen.kicad.schematic_index import payload_index, stage_files
 
-    head = path.read_text(encoding="utf-8")[:200]
-    if not head.lstrip().startswith("(kicad_sch"):
+    path = inputs.document
+    if not inputs.files[0][1].lstrip().startswith(b"(kicad_sch"):
         raise PlotError(f"{path.name} is not a KiCad schematic")
     with tempfile.TemporaryDirectory(prefix="cadgen-kicad-plot-") as folder:
-        stage = Path(folder)
-        for sheet in _schematic_files(path):
-            shutil.copy2(sheet, stage / sheet.name)
-        for extra in (path.with_suffix(".kicad_pro"), path.parent / "sym-lib-table"):
-            if extra.is_file():
-                shutil.copy2(extra, stage / extra.name)
-        run_kicad_cli(install, ["sch", "export", "svg", "-o", "plots", path.name], cwd=stage)
-        plots = sorted((stage / "plots").glob("*.svg"))
-        if not plots:
+        staged = stage_files(inputs.files, Path(folder))
+        run_kicad_cli(install, ["sch", "export", "svg", "-o", "plots", staged.name], cwd=staged.parent)
+        # A picture is named after its sheet, in the composed form the index names it: KiCad names
+        # its files as the platform does, which on macOS decomposes "Ü" into "U" and a diaeresis.
+        pictures = {}
+        stem = unicodedata.normalize("NFC", path.stem)
+        for plot in sorted((staged.parent / "plots").glob("*.svg")):
+            name = unicodedata.normalize("NFC", plot.stem)
+            name = name[len(stem) + 1 :] if name.startswith(stem + "-") else name
+            pictures[name or stem] = plot
+        if not pictures:
             raise PlotError(f"KiCad drew no sheet of {path.name}")
-        root = stage / "plots" / f"{path.stem}.svg"
-        ordered = ([root] if root in plots else []) + [plot for plot in plots if plot != root]
-        sheets = []
-        for plot in ordered:
-            svg = _strip_stamps(plot.read_text(encoding="utf-8"))
-            width, height = _svg_size(svg)
-            name = plot.stem[len(path.stem) + 1 :] if plot.stem.startswith(path.stem + "-") else plot.stem
-            sheets.append({"name": name or path.stem, "svg": svg, "width": width, "height": height, "background": SCHEMATIC_BACKGROUND})
         try:
-            index = payload_index(stage / path.name, install, [sheet["name"] for sheet in sheets])
+            index = payload_index(staged, install, list(pictures))
         except ValueError as error:
             raise PlotError(str(error)) from None
+        sheets = []
+        for name in (sheet["name"] for sheet in index["sheets"]):  # the index's order: KiCad's pages
+            svg = _strip_stamps(pictures[name].read_text(encoding="utf-8"))
+            width, height = _svg_size(svg)
+            sheets.append({"name": name, "svg": svg, "width": width, "height": height, "background": SCHEMATIC_BACKGROUND})
     return {"kind": "schematic", "sheets": sheets, "schematic": index, "unrouted": None}
+
+
+def _build(inputs: _Inputs, install) -> dict:
+    build = _board_payload if inputs.document.suffix.lower() == ".kicad_pcb" else _schematic_payload
+    return {"schemaVersion": PLOT_SCHEMA_VERSION, "kicadVersion": install.version, **build(inputs, install)}
 
 
 def build_plot(path: Path, *, install=None) -> dict:
     """The plot payload of the board or schematic at ``path``."""
     from cadgen.kicad.install import find_kicad
 
-    path = Path(path).resolve()
-    suffix = path.suffix.lower()
-    if suffix not in _SUFFIXES:
-        raise PlotError(f"{path.name} is not a KiCad board (.kicad_pcb) or schematic (.kicad_sch)")
-    if not path.is_file():
-        raise PlotError(f"{path.name} does not exist")
+    path = _checked(path)
     install = install or find_kicad()
-    payload = _board_payload(path, install) if suffix == ".kicad_pcb" else _schematic_payload(path, install)
-    return {"schemaVersion": PLOT_SCHEMA_VERSION, "kicadVersion": install.version, **payload}
-
-
-def _document_hash(path: Path) -> str:
-    """The bytes a plot is drawn from: a board's file and the project and rules beside it (the
-    DRC's findings and the nets' classes read them), a schematic's every sheet and its project."""
-    digest = hashlib.sha256()
-    if path.suffix.lower() == ".kicad_pcb":
-        files = [path] + [sibling for sibling in (path.with_suffix(".kicad_pro"), path.with_suffix(".kicad_dru")) if sibling.is_file()]
-    else:
-        files = _schematic_files(path) + [sibling for sibling in (path.with_suffix(".kicad_pro"),) if sibling.is_file()]
-    for entry in files:
-        digest.update(entry.name.encode("utf-8") + b"\0")
-        digest.update(hashlib.sha256(entry.read_bytes()).digest())
-    return digest.hexdigest()
+    return _build(_inputs(path), install)
 
 
 def plot_payload_bytes(path: Path) -> bytes:
@@ -434,17 +490,13 @@ def plot_payload_bytes(path: Path) -> bytes:
     from cadgen.kicad.install import find_kicad
     from cadgen.store import drawings
 
-    path = Path(path).resolve()
-    if path.suffix.lower() not in _SUFFIXES:
-        raise PlotError(f"{path.name} is not a KiCad board (.kicad_pcb) or schematic (.kicad_sch)")
-    if not path.is_file():
-        raise PlotError(f"{path.name} does not exist")
+    path = _checked(path)
     install = find_kicad()
-    scheme = f"kicad-plot:{PLOT_SCHEMA_VERSION}:{install.version}"
-    key = drawings.drawing_input_key(_document_hash(path), scheme=scheme)
+    inputs = _inputs(path)
+    key = drawings.drawing_input_key(inputs.key(), scheme=f"kicad-plot:{PLOT_SCHEMA_VERSION}.{_REVISION}:{install.version}")
     cached = drawings.read(key)
     if cached is not None:
         return cached
-    data = json.dumps(build_plot(path, install=install), separators=(",", ":")).encode("utf-8")
+    data = json.dumps(_build(inputs, install), separators=(",", ":")).encode("utf-8")
     drawings.write(key, data)
     return data

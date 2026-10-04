@@ -14,7 +14,7 @@ library and no KiCad to write. The symbols, in their library's frame (y up):
 
 Every UUID is derived from the document's name and a count, so the same calls write
 the same bytes. Two fixtures both suites read, with what KiCad 10 makes of them:
-:func:`write_hierarchy` (sheets in sheets, one file shown twice) and
+:func:`write_hierarchy` (sheets in sheets, one file shown twice, files in a subfolder) and
 :func:`write_connections` (the ways a wire, a label, a junction and a pin meet).
 """
 
@@ -165,16 +165,18 @@ def resistor_pins(at: tuple[float, float]) -> tuple[tuple[float, float], tuple[f
 
 def write_hierarchy(folder: Path) -> None:
     """A root with one file shown twice (Left, Right), a sheet inside that file (Deep: so two
-    instances of it too), and a sheet whose name has a space."""
+    instances of it too), and a sheet whose name has a space and an umlaut (which macOS writes
+    decomposed in the name of its plot). The twice-shown file and its sheet lie in a subfolder,
+    ``sheets/``, as a KiCad project often keeps them."""
     root = SchematicText("hier", "root", title="Hier root")
     r1 = resistor_pins((25.4, 50.8))
     root.symbol("Test:R", (25.4, 50.8), "R1")
     root.wire(r1[0], (50.8, 45.72))
-    left = root.sheet("Left", "child.kicad_sch", (50.8, 40.64), {"SIG": (50.8, 45.72)}, [(f"/{root.uuid}", "2")])
-    right = root.sheet("Right", "child.kicad_sch", (50.8, 76.2), {"SIG": (50.8, 81.28)}, [(f"/{root.uuid}", "3")])
+    left = root.sheet("Left", "sheets/child.kicad_sch", (50.8, 40.64), {"SIG": (50.8, 45.72)}, [(f"/{root.uuid}", "2")])
+    right = root.sheet("Right", "sheets/child.kicad_sch", (50.8, 76.2), {"SIG": (50.8, 81.28)}, [(f"/{root.uuid}", "3")])
     root.wire((50.8, 81.28), (40.64, 81.28))
     root.label("RSIG", (40.64, 81.28), "global_label", angle=180, justify="right")
-    power = root.sheet("Power Stage", "power.kicad_sch", (101.6, 40.64), {}, [(f"/{root.uuid}", "4")])
+    power = root.sheet("Power Stäge", "power.kicad_sch", (101.6, 40.64), {}, [(f"/{root.uuid}", "4")])
     root.label("VLOC", r1[1])
     child = SchematicText("hier", "child", root=root.uuid, title="Child")
     halves = [f"/{root.uuid}/{left}", f"/{root.uuid}/{right}"]
@@ -196,19 +198,21 @@ def write_hierarchy(folder: Path) -> None:
     stage.label("VLOC", (25.4, 55.88))
     stage.wire((60.96, 60.96), (71.12, 60.96))
     stage.label("FLOAT", (60.96, 60.96))
-    for name, document in (("hier", root), ("child", child), ("deep", deep), ("power", stage)):
+    (folder / "sheets").mkdir(exist_ok=True)
+    for name, document in (("hier", root), ("sheets/child", child), ("sheets/deep", deep), ("power", stage)):
         (folder / f"{name}.kicad_sch").write_text(document.text(), encoding="utf-8")
 
 
-#: What KiCad 10 makes of write_hierarchy (its netlist and its plot's file names).
+#: What KiCad 10 makes of write_hierarchy: its sheets in its page order (the root, then pages 2
+#: to 6), named as its plot names them, and its netlist.
 HIERARCHY_SHEETS = [
-    ("hier", "/", "hier.kicad_sch"), ("Left-Deep", "/Left/Deep/", "deep.kicad_sch"), ("Left", "/Left/", "child.kicad_sch"),
-    ("Power Stage", "/Power Stage/", "power.kicad_sch"), ("Right-Deep", "/Right/Deep/", "deep.kicad_sch"),
-    ("Right", "/Right/", "child.kicad_sch"),
+    ("hier", "/", "hier.kicad_sch"), ("Left", "/Left/", "sheets/child.kicad_sch"), ("Right", "/Right/", "sheets/child.kicad_sch"),
+    ("Power Stäge", "/Power Stäge/", "power.kicad_sch"), ("Left-Deep", "/Left/Deep/", "deep.kicad_sch"),
+    ("Right-Deep", "/Right/Deep/", "deep.kicad_sch"),
 ]
 HIERARCHY_NETS = {
     "/Left/SIG": ["R1.1", "R2.1"], "/VLOC": ["R1.2"], "/Left/LOC": ["R2.2", "R4.1"], "/Right/LOC": ["R3.2", "R5.1"],
-    "RSIG": ["R3.1"], "GND": ["R4.2", "R5.2", "R6.1"], "/Power Stage/VLOC": ["R6.2"],
+    "RSIG": ["R3.1"], "GND": ["R4.2", "R5.2", "R6.1"], "/Power Stäge/VLOC": ["R6.2"],
 }
 
 

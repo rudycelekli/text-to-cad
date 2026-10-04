@@ -18,9 +18,12 @@ relative to the folder of the file that holds it, and a file used by two sheets
 is two SHEET INSTANCES, each with its own references (a symbol's ``instances``
 entry for that instance's path of UUIDs). A sheet instance is named as
 KiCad's ``sch export svg`` names its plot, ``<root>-<Sheet>-<Subsheet>.svg``,
-less ``<root>-`` (the root: its file's stem), and the sheets are ordered as
-the plot orders them -- the root, then by that file name -- so a sheet here and
-a sheet of the plot payload (:mod:`cadgen.kicad.plot`) share a name.
+less ``<root>-`` (the root: its file's stem), so a sheet here and a sheet of the
+plot payload (:mod:`cadgen.kicad.plot`) share a name; both are in KiCad's page
+order: the root, then by page number (sheets of one page as KiCad lists them,
+depth first). A sheet file may lie in another folder (``sheets/power.kicad_sch``,
+``../common/io.kicad_sch``): :func:`hierarchy_files` finds every file a
+schematic reads, which a plot or a netlist stages together.
 
 Frames
 ------
@@ -50,10 +53,11 @@ from __future__ import annotations
 import difflib
 import math
 import os
-import shutil
+import re
 import tempfile
+import unicodedata
 from dataclasses import dataclass, field, replace
-from pathlib import Path, PurePath
+from pathlib import Path
 from typing import Iterable, Mapping, Sequence
 
 from cadgen.kicad import sexpr
@@ -73,9 +77,11 @@ __all__ = [
     "Unit",
     "Wire",
     "export_netlist",
+    "hierarchy_files",
     "payload_index",
     "read_index",
     "read_schematic",
+    "stage_files",
 ]
 
 XY = tuple[float, float]
@@ -651,18 +657,26 @@ class _SheetInstance:
     names: tuple[str, ...]  # the sheet names from the root down: the plot names the sheet after them
     parent: int | None = None
     uuid: str = ""  # its sheet symbol's uuid in the parent
+    page: str = ""  # the page number KiCad gives this instance
 
 
 def _plot_name(stem: str, names: Sequence[str]) -> str:
-    """The sheet's name as its plot is named: KiCad's ``<root>-<Sheet>-<Subsheet>.svg`` less ``<root>-``."""
-    if not names:
-        return stem
-    return "-".join(names).replace("/", "_").replace("\\", "_")
+    """The sheet's name as its plot is named: KiCad's ``<root>-<Sheet>-<Subsheet>.svg`` less ``<root>-``,
+    composed (Unicode NFC), as the plot's names are read whatever form the platform wrote."""
+    name = "-".join(names).replace("/", "_").replace("\\", "_") if names else stem
+    return unicodedata.normalize("NFC", name)
+
+
+def _decoded(path: Path, data: bytes) -> str:
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        raise ValueError(f"{path.name} is not a readable KiCad schematic: it is not UTF-8 text") from None
 
 
 def _parse(path: Path) -> list:
     try:
-        tree = sexpr.parse(path.read_text(encoding="utf-8"))
+        tree = sexpr.parse(_decoded(path, path.read_bytes()))
     except sexpr.SexprError as error:
         raise ValueError(f"{path.name} is not a readable KiCad schematic ({error})") from None
     if sexpr.head(tree) != "kicad_sch":
@@ -674,9 +688,31 @@ def _title(tree: list) -> str:
     return str(sexpr.value(sexpr.find(tree, "title_block") or [], "title") or "")
 
 
+def _page(node: list, parent_instance: str) -> str:
+    """The page number of the sheet ``node`` in its parent's instance ``parent_instance``."""
+    for project in sexpr.find_all(sexpr.find(node, "instances") or [], "project"):
+        for entry in sexpr.find_all(project, "path"):
+            if len(entry) > 1 and str(entry[1]) == parent_instance:
+                return str(sexpr.value(entry, "page") or "")
+    return ""
+
+
+def _page_order(page: str) -> tuple:
+    """KiCad's order of page numbers: whole numbers first, by value; any other after, naturally."""
+    try:
+        return (0, int(page), ())
+    except ValueError:
+        return (1, 0, _natural(page))
+
+
 def _hierarchy(root: Path) -> tuple[list[_SheetInstance], list[Path]]:
-    """Every sheet instance under ``root``, ordered as KiCad's plot orders their pictures, and
-    every file they show (each once, the root first)."""
+    """Every sheet instance under ``root`` in KiCad's page order, and every file they show (each
+    once, the root first).
+
+    The order is the one KiCad pages and plots a schematic in: the root first, then by page
+    number; sheets of one page (or none) in the order KiCad lists them, depth first, a sheet's
+    own sheets by where they sit on it (left to right, then top to bottom).
+    """
     trees: dict[Path, list] = {}
 
     def load(path: Path) -> list:
@@ -688,22 +724,23 @@ def _hierarchy(root: Path) -> tuple[list[_SheetInstance], list[Path]]:
     root = Path(root)
     tree = load(root)
     instances = [_SheetInstance(
-        sheet=Sheet(name=root.stem, path="/", file=root.name, title=_title(tree), instance=f"/{sexpr.value(tree, 'uuid') or ''}"),
+        sheet=Sheet(name=_plot_name(root.stem, ()), path="/", file=root.name, title=_title(tree), instance=f"/{sexpr.value(tree, 'uuid') or ''}"),
         tree=tree, names=(),
     )]
-    pending = [(0, root.parent, (root.resolve(),))]
-    while pending:
-        parent, folder, above = pending.pop(0)
-        for node in sexpr.find_all(instances[parent].tree, "sheet"):
+
+    def visit(parent: int, folder: Path, above: tuple[Path, ...]) -> None:
+        outer = instances[parent]
+        children = []
+        for node in sexpr.find_all(outer.tree, "sheet"):
             properties = _properties(node)
             name = properties.get("Sheetname", properties.get("Sheet name", ""))
             file = properties.get("Sheetfile", properties.get("Sheet file", ""))
-            uuid = str(sexpr.value(node, "uuid") or "")
             path = Path(file) if os.path.isabs(file) else folder / file
-            if not file or not path.is_file() or path.resolve() in above:
+            if not file or path.suffix.lower() != ".kicad_sch" or not path.is_file() or path.resolve() in above:
                 continue  # KiCad cannot show it either
+            children.append((_key(_pair(sexpr.find(node, "at")) or (0.0, 0.0)), str(sexpr.value(node, "uuid") or ""), name, file, path, node))
+        for _at, uuid, name, file, path, node in sorted(children, key=lambda child: child[:2]):
             sheet_tree = load(path)
-            outer = instances[parent]
             instances.append(_SheetInstance(
                 sheet=Sheet(
                     name=_plot_name(root.stem, (*outer.names, name)),
@@ -713,10 +750,12 @@ def _hierarchy(root: Path) -> tuple[list[_SheetInstance], list[Path]]:
                     instance=f"{outer.sheet.instance}/{uuid}",
                 ),
                 tree=sheet_tree, names=(*outer.names, name), parent=parent, uuid=uuid,
+                page=_page(node, outer.sheet.instance),
             ))
-            pending.append((len(instances) - 1, path.parent, (*above, path.resolve())))
-    # The plot's order: the root, then by each picture's file name.
-    order = [0] + sorted(range(1, len(instances)), key=lambda index: PurePath(f"{root.stem}-{instances[index].sheet.name}.svg"))
+            visit(len(instances) - 1, path.parent, (*above, path.resolve()))
+
+    visit(0, root.parent, (root.resolve(),))
+    order = [0] + sorted(range(1, len(instances)), key=lambda index: (_page_order(instances[index].page), index))
     position = {old: new for new, old in enumerate(order)}
     ordered = [
         replace(instances[old], parent=position[instances[old].parent] if instances[old].parent is not None else None)
@@ -724,6 +763,38 @@ def _hierarchy(root: Path) -> tuple[list[_SheetInstance], list[Path]]:
     ]
     files = list(dict.fromkeys(trees))
     return ordered, files
+
+
+_SHEET_FILE = re.compile(r'\(property\s+"Sheet ?file"\s+"((?:[^"\\]|\\.)*)"')
+
+
+def hierarchy_files(root: Path) -> list[tuple[Path, bytes]]:
+    """Every file KiCad reads with the schematic whose root sheet is ``root``, with its bytes,
+    each read once: the root, every sheet file under it (each once), and the project and symbol
+    table beside the root. Paths are absolute, the root's first.
+
+    The sheets are found by their ``Sheetfile`` fields, not by parsing, so the plot's cache key
+    (these bytes) costs a request no parse; a sheet named but missing is left out, as KiCad
+    shows it empty, and so is a file that is no ``.kicad_sch``: a document never has another
+    file read for it.
+    """
+    root = Path(os.path.abspath(root))
+    found: dict[Path, bytes] = {}
+    pending = [root]
+    while pending:
+        path = pending.pop(0)
+        if path in found:
+            continue
+        found[path] = path.read_bytes()
+        for name in _SHEET_FILE.findall(_decoded(path, found[path])):
+            sheet = Path(sexpr._unescape(name))
+            sheet = Path(os.path.abspath(sheet if sheet.is_absolute() else path.parent / sheet))
+            if sheet.suffix.lower() == ".kicad_sch" and sheet not in found and sheet.is_file():
+                pending.append(sheet)
+    for extra in (root.with_suffix(".kicad_pro"), root.parent / "sym-lib-table"):
+        if extra.is_file():
+            found[extra] = extra.read_bytes()
+    return list(found.items())
 
 
 # --- connections ---------------------------------------------------------------------------
@@ -756,6 +827,30 @@ def _on_wire(point: tuple[int, int], a: tuple[int, int], b: tuple[int, int]) -> 
     return min(ax, bx) <= px <= max(ax, bx) and min(ay, by) <= py <= max(ay, by)
 
 
+_CELL = 254_000  # a grid cell for finding wires near a point: 25.4 mm in KiCad's units
+_CELLS_PER_WIRE = 64  # a wire whose box covers more cells is checked against every point
+
+
+def _wires_near(wires: Sequence[tuple[tuple[int, int], tuple[int, int]]]):
+    """``near(point)``: the wires whose box could hold ``point``. Each wire is filed under the grid
+    cells its box covers, so a sheet's points are not each checked against all its wires."""
+    cells: dict[tuple[int, int], list[int]] = {}
+    everywhere: list[int] = []
+    for number, (a, b) in enumerate(wires):
+        (x0, x1), (y0, y1) = sorted((a[0] // _CELL, b[0] // _CELL)), sorted((a[1] // _CELL, b[1] // _CELL))
+        if (x1 - x0 + 1) * (y1 - y0 + 1) > _CELLS_PER_WIRE:
+            everywhere.append(number)
+            continue
+        for x in range(x0, x1 + 1):
+            for y in range(y0, y1 + 1):
+                cells.setdefault((x, y), []).append(number)
+
+    def near(point: tuple[int, int]) -> list[int]:
+        return cells.get((point[0] // _CELL, point[1] // _CELL), []) + everywhere
+
+    return near
+
+
 def _connect(drawn: _Drawn, sheet: int, links: _Links) -> None:
     """Join what touches on one sheet instance, keyed ``(sheet, ...)``."""
     wires = [(_key(a), _key(b)) for a, b in drawn.wires]
@@ -766,11 +861,12 @@ def _connect(drawn: _Drawn, sheet: int, links: _Links) -> None:
         for _pin, at, _end in symbol.pins:
             links.find((sheet, *_key(at)))
     # A label or a junction on a wire's middle joins it; a wire end or a pin there does not.
+    near = _wires_near(wires)
     for point in [label.at for label in drawn.labels] + drawn.junctions:
         key = _key(point)
         links.find((sheet, *key))
-        for number, (a, b) in enumerate(wires):
-            if _on_wire(key, a, b):
+        for number in near(key):
+            if _on_wire(key, *wires[number]):
                 links.join((sheet, *key), (sheet, "wire", number))
     for pins in drawn.sheet_pins.values():
         for _name, at in pins:
@@ -990,14 +1086,18 @@ def export_netlist(root: Path, install) -> str:
     return (root.parent / _NETLIST).read_text(encoding="utf-8")
 
 
-def payload_index(root: Path, install, sheet_names: Sequence[str]) -> dict:
+def payload_index(root: Path, install, plotted: Sequence[str]) -> dict:
     """The index a schematic's plot payload carries as ``schematic``, for the staged root sheet
-    ``root`` the plot drew: KiCad's netlist exported beside it (one ``kicad-cli`` run), the
-    sheets as the plot names them (``sheet_names``, in its order)."""
+    ``root`` the plot drew (``plotted``: the names of its pictures): KiCad's netlist exported
+    beside it (one ``kicad-cli`` run), on the plot's sheets in KiCad's page order, then any
+    picture the hierarchy does not name. The plot orders its pictures as these sheets."""
     root = Path(root)
     instances, _files = _hierarchy(root)
     index = _index(instances, netlist=export_netlist(root, install), project=root.with_suffix(".kicad_pro"))
-    return index.aligned(sheet_names).as_json()
+    pictures = set(plotted)
+    names = [sheet.name for sheet in index.sheets if sheet.name in pictures]
+    names += [name for name in plotted if name not in set(names)]
+    return index.aligned(names).as_json()
 
 
 # --- answering references ---------------------------------------------------------------------
@@ -1021,20 +1121,22 @@ class SchematicView:
         self.junctions: tuple[Junction, ...] = index.junctions
         self.no_connects: tuple[NoConnect, ...] = index.no_connects
         self._parts = {part.ref: part for part in index.parts}
-        nets = []
-        for name, netclass in index.nets:
-            pins = tuple(pin for part in index.parts for pin in part.pins if pin.net == name)
-            on = {pin.part for pin in pins}
-            nets.append(Net(
-                name=name,
-                netclass=netclass,
-                pins=pins,
-                parts=tuple(part for part in index.parts if part.ref in on),
-                labels=tuple(label for label in index.labels if label.net == name),
-                wires=tuple(wire for wire in index.wires if wire.net == name),
-            ))
-        self.nets: tuple[Net, ...] = tuple(nets)
-        self._nets = {net.name: net for net in nets}
+        # Everything on each net, in one pass over the schematic (a pass per net is quadratic).
+        on: dict[str, tuple[list, dict, list, list]] = {name: ([], {}, [], []) for name, _netclass in index.nets}
+        for part in index.parts:
+            for pin in part.pins:
+                if pin.net in on:
+                    on[pin.net][0].append(pin)
+                    on[pin.net][1][part.ref] = part
+        for slot, items in ((2, index.labels), (3, index.wires)):
+            for item in items:
+                if item.net in on:
+                    on[item.net][slot].append(item)
+        self.nets: tuple[Net, ...] = tuple(
+            Net(name=name, netclass=netclass, pins=tuple(on[name][0]), parts=tuple(on[name][1].values()), labels=tuple(on[name][2]), wires=tuple(on[name][3]))
+            for name, netclass in index.nets
+        )
+        self._nets = {net.name: net for net in self.nets}
 
     def __repr__(self) -> str:
         return f"SchematicView({self.path.name}: {len(self.sheets)} sheets, {len(self.parts)} parts, {len(self.nets)} nets)"
@@ -1110,23 +1212,23 @@ def _listing(parts: Mapping[str, Part]) -> str:
     return ", ".join(refs[:40]) + (f" and {len(refs) - 40} more" if len(refs) > 40 else "")
 
 
-def _stage(root: Path, files: Sequence[Path], folder: Path) -> Path:
-    """Copy the hierarchy's files into ``folder`` as they lie relative to each other, the
-    project and symbol table beside the root; the staged root. (A sheet named by an absolute
-    path is also read from where it lies, as KiCad reads it.)"""
-    root = root.resolve()
-    extras = [path for path in (root.with_suffix(".kicad_pro"), root.parent / "sym-lib-table") if path.is_file()]
+def stage_files(files: Sequence[tuple[Path, bytes]], folder: Path) -> Path:
+    """Write ``files`` (absolute paths and their bytes, the document first: :func:`hierarchy_files`)
+    into ``folder`` as they lie relative to one another; the staged document. A sheet on another
+    drive than the document is left out: KiCad reads a sheet named by an absolute path where it
+    lies."""
+    document = files[0][0]
     try:
-        base = Path(os.path.commonpath([str(root.parent), *(str(path.parent) for path in files)]))
+        base = Path(os.path.commonpath([str(path.parent) for path, _data in files]))
     except ValueError:  # a sheet on another drive
-        base = root.parent
-    for path in dict.fromkeys([root, *files, *extras]):
+        base = document.parent
+    for path, data in files:
         if not path.is_relative_to(base):
             continue
         target = folder / path.relative_to(base)
         target.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(path, target)
-    return folder / root.relative_to(base)
+        target.write_bytes(data)
+    return folder / document.relative_to(base)
 
 
 def read_schematic(path: Path | str) -> SchematicView:
@@ -1146,10 +1248,10 @@ def read_schematic(path: Path | str) -> SchematicView:
         raise ValueError(f"{schematic.name} is not a KiCad schematic (.kicad_sch)")
     if not schematic.is_file():
         raise FileNotFoundError(f"{schematic} does not exist")
-    instances, files = _hierarchy(schematic)
+    instances, _files = _hierarchy(schematic)
     install = find_kicad()
     with tempfile.TemporaryDirectory(prefix="cadgen-kicad-netlist-") as folder:
-        staged = _stage(schematic, files, Path(folder))
+        staged = stage_files(hierarchy_files(schematic), Path(folder))
         netlist = export_netlist(staged, install)
     index = _index(instances, netlist=netlist, project=schematic.with_suffix(".kicad_pro"))
     return SchematicView(schematic.resolve(), index)
