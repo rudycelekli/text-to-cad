@@ -47,12 +47,11 @@ from .content_types import extension_of
 from .scanner import (
     SOURCE_EXTENSIONS,
     catalog_input_fingerprint,
-    catalog_lists,
+    catalog_path,
     is_hidden_name,
     node_basename,
     path_is_inside,
     real_path_or,
-    relative_path_stays_inside_root,
     warm_catalog_entry,
 )
 
@@ -72,7 +71,6 @@ class CatalogWarmer:
 
     def __init__(self, root_path: str, *, lazy: bool = False) -> None:
         self.root_path = os.path.abspath(root_path)
-        self._real_root = real_path_or(self.root_path)
         self._lazy = lazy
         self._lock = threading.Lock()
         self._settled = threading.Condition(self._lock)
@@ -83,11 +81,17 @@ class CatalogWarmer:
 
     def saved(self, outputs: dict, watched: str | None = None) -> None:
         """Warm the rows of ``outputs`` (each saved path, as the ledger names it, and the tree
-        its build saved), ``watched`` (the file the feed is about) first; a lazy root warms
-        only ``watched``. Returns at once: the work is a thread's."""
+        its build saved), ``watched`` (the file the feed is about, as the view names it) first; a
+        lazy root warms only ``watched``. Returns at once: the work is a thread's."""
         first = self._listed(watched) if watched else None
+        # The ledger names a file by its real path, the catalog by the way its walk went, through
+        # any symlinked folder; the watched file is the one known by both.
+        first_real = real_path_or(first) if first else None
         for output, tree in outputs.items():
-            path = self._listed(output)
+            if first_real is not None and real_path_or(str(output)) == first_real:
+                path = first
+            else:
+                path = self._listed(output)
             if path is None or (self._lazy and path != first):
                 continue
             fingerprint = catalog_input_fingerprint(path)
@@ -123,20 +127,12 @@ class CatalogWarmer:
 
     def _listed(self, output) -> str | None:
         """``output`` spelled as this root's catalog names it, when the catalog lists it."""
-        real = real_path_or(os.path.abspath(str(output)))
-        try:
-            relative = os.path.relpath(real, self._real_root)
-        except ValueError:
-            return None  # another drive
-        if not relative_path_stays_inside_root(relative) or relative == os.curdir:
-            return None
-        path = os.path.join(self.root_path, relative)
-        if self._lazy:
-            # A whole filesystem lists what it is asked for, hidden folders included.
-            listed = (path_is_inside(path, self.root_path) and not is_hidden_name(node_basename(path))
-                      and extension_of(path) in SOURCE_EXTENSIONS)
-        else:
-            listed = catalog_lists(self.root_path, path)
+        if not self._lazy:
+            return catalog_path(self.root_path, output)
+        # A whole filesystem lists what it is asked for, as it is asked, hidden folders included.
+        path = os.path.abspath(str(output))
+        listed = (path_is_inside(path, self.root_path) and not is_hidden_name(node_basename(path))
+                  and extension_of(path) in SOURCE_EXTENSIONS)
         return path if listed else None
 
     def _drain(self) -> None:

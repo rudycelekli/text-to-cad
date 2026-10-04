@@ -476,10 +476,11 @@ class Server:
         """The workspace folder whose catalog lists ``model``, if any.
 
         A model the agent writes under ``build/`` or a hidden folder is still the thread's, but the
-        workspace's catalog never shows it, so it has no project around it to browse.
+        workspace's catalog never shows it, so it has no project around it to browse. One in a
+        symlinked folder of the workspace is the project's, as its catalog shows it, wherever the
+        link leads.
         """
-        folder = self.workspace.contains(model)
-        return folder if folder and catalog_lists(folder, model) else None
+        return next((folder for folder in self.workspace.paths if catalog_lists(folder, model)), None)
 
     def _root_for(self, model: str) -> Root:
         project = self._project_of(model)

@@ -69,6 +69,7 @@ __all__ = [
     "asset_for_path",
     "catalog_input_fingerprint",
     "catalog_lists",
+    "catalog_path",
     "is_hidden_name",
     "is_served_cad_asset",
     "path_is_inside",
@@ -983,15 +984,50 @@ def warm_catalog_entry(repo_root, file_path) -> None:
     _catalog_entry(repo_root, os.path.abspath(repo_root), os.path.abspath(file_path))
 
 
+def catalog_path(root_path, file_path) -> str | None:
+    """``file_path`` as a catalog of ``root_path`` names it, or ``None`` when that catalog does
+    not list it: a CAD file under the root, in no folder the walk skips or never enters, within
+    the walk's depth.
+
+    The walk names a file by the way it went. It follows a symlinked folder by its link, so a
+    link out of the root lists what it reaches under the link's name: ``root/lib/part.step``
+    for ``lib -> /elsewhere``, never ``/elsewhere/part.step``. So the path is measured from the
+    root as written, through any link, and only a path that is not under the root as written
+    is measured from the root's real path, as ``path_is_inside`` does: the same root under
+    another name (``/var`` is ``/private/var`` on macOS; the daemon's ledger names real paths).
+    A folder whose real path is one above it (``loop -> .``) is one the walk never enters. The
+    one rule no path shows is a folder the walk reached first under another name (an
+    earlier-sorted link to it): a path through it is answered as given, a file inside the root
+    that the catalog lists under that other name.
+    """
+    root = os.path.abspath(root_path)
+    path = os.path.abspath(file_path)
+    name = node_basename(path)
+    relative = path_relative(root, path)
+    if not relative_path_stays_inside_root(relative):
+        folder = path_relative(real_path_or(root), real_path_or(os.path.dirname(path)))
+        if not relative_path_stays_inside_root(folder):
+            return None
+        relative = os.path.join(folder, name) if folder else name
+    folders = relative.split(os.sep)[:-1]
+    if (not _is_listed_file(name) or len(folders) > SCAN_MAX_DEPTH
+            or any(_should_skip_directory(part) for part in folders) or not os.path.isfile(path)):
+        return None
+    chain = [root]
+    for part in folders:
+        chain.append(os.path.join(chain[-1], part))
+    # Without a link a folder's real path is its parent's plus its name, so only a link can lead
+    # back up. Windows resolves every folder, as the walk does there: islink misses a junction.
+    if os.name == "nt" or any(os.path.islink(folder) for folder in chain[1:]):
+        reals = [real_path_or(folder) for folder in chain]
+        if len(set(reals)) < len(reals):
+            return None
+    return os.path.join(root, relative)
+
+
 def catalog_lists(root_path, file_path) -> bool:
-    """Whether a catalog of ``root_path`` lists ``file_path``: a CAD file inside it,
-    with no folder between them that the walk skips, within the walk's depth."""
-    folder = real_path_or(os.path.dirname(os.path.abspath(file_path)))
-    relative = path_relative(real_path_or(os.path.abspath(root_path)), folder)
-    if not relative_path_stays_inside_root(relative) or not _is_listed_file(node_basename(str(file_path))):
-        return False
-    folders = relative.split(os.sep) if relative else []
-    return len(folders) <= SCAN_MAX_DEPTH and not any(_should_skip_directory(part) for part in folders)
+    """Whether a catalog of ``root_path`` lists ``file_path`` (:func:`catalog_path`)."""
+    return catalog_path(root_path, file_path) is not None
 
 
 def scan_cad_files(repo_root, files) -> dict:

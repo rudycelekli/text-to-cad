@@ -54,9 +54,10 @@ def preview_update(root_path: str, file_ref: str, *, after: str | None = None, l
 def preview_status(root_path: str, file_ref: str, *, jobs: list[dict] | None = None, lazy: bool = False,
                    on_saved: Callable[[dict[str, str], str], None] | None = None) -> dict:
     """The newest build of the file. ``on_saved`` hears what the file's builds have saved
-    ({path: saved tree}, newest build last) and the file asked about, before anything here
-    reads the file: the viewer starts on those files' catalog rows (``warm.py``). That is
-    best effort: whatever it raises is logged, and the feed answers all the same."""
+    ({path: saved tree}, newest build last) and the file asked about, as the view names it
+    (the ledger names it by its real path), before anything here reads the file: the viewer
+    starts on those files' catalog rows (``warm.py``). That is best effort: whatever it
+    raises is logged, and the feed answers all the same."""
     file_path = _preview_target(root_path, file_ref, lazy=lazy)
     # Match the catalog's root-relative file identity. An absolute path in a
     # provisional entry would be written into ?file= by the selection effect,
@@ -81,7 +82,7 @@ def preview_status(root_path: str, file_ref: str, *, jobs: list[dict] | None = N
         }
         if saved:
             try:
-                on_saved(saved, target)
+                on_saved(saved, file_path)
             except Exception as error:  # noqa: BLE001 - a warm only saves a read time; the feed must answer
                 LOG.warning("catalog warm hand-off failed: %r", error)
     if not matching:

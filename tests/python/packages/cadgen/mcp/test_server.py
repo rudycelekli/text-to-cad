@@ -131,6 +131,16 @@ class TabServerTest(_Session):
         self.assertEqual((handed["model"], handed["explore"], handed["root"]["kind"]), (loose, False, "global"))
         self.assertEqual([entry.path for entry in self.server.recents.list()], [loose, built["model"], opened["model"]])
 
+    def test_a_model_in_a_symlinked_folder_of_the_workspace_is_the_projects(self) -> None:
+        # The workspace's catalog lists it by the link, wherever the link leads.
+        try:
+            (self.workspace / "library").symlink_to(self.tmp / "elsewhere", target_is_directory=True)
+        except OSError as error:  # Windows without the symlink privilege
+            self.skipTest(f"directory symlinks unavailable: {error}")
+        linked = self.launch("cad_open", {"path": "library/loose.stl"})
+        self.assertEqual((linked["model"], linked["root"]["kind"], linked["root"]["path"], linked["explore"]),
+                         (str(self.workspace / "library" / "loose.stl"), "workspace", str(self.workspace), True))
+
     def test_a_bad_path_is_the_tools_answer_not_a_protocol_error(self) -> None:
         missing = self.call("cad_open", {"path": "parts/nope.step"})
         self.assertTrue(missing["isError"])

@@ -36,7 +36,7 @@ from .backend import ForbiddenAssetError, LocalAssetBackend, normalized_file_ref
 from .cadgen_ops import create_cadgen_ops
 from .content_types import content_type_for_static_asset
 from .encoding import UriError, strict_decode_uri_component
-from .scanner import catalog_lists, path_is_inside
+from .scanner import catalog_path, path_is_inside
 from .store_paths import virtual_store_asset
 from .tess_cache import (
     TESS_CACHE_METADATA_MAX_BYTES, parse_tess_cache_admission,
@@ -605,7 +605,9 @@ class CadApp:
         return self._recents
 
     def _library_path(self, ref) -> str:
-        """The absolute path of a model in this Viewer's catalog, from the ``file`` a page sends."""
+        """The absolute path of a model in this Viewer's catalog, from the ``file`` a page sends,
+        as the catalog names it: a model in a symlinked folder by the link (``catalog_path``), where
+        this Viewer shows it and where the library reopens it."""
         normalized = normalized_file_ref(ref)
         if not normalized:
             raise ValueError("name the model by its file")
@@ -613,9 +615,10 @@ class CadApp:
         path = os.path.abspath(normalized if os.path.isabs(normalized) else os.path.join(root, normalized))
         if not (path == root or path_is_inside(path, root)):
             raise ForbiddenAssetError()
-        if not catalog_lists(root, path):
+        listed = catalog_path(root, path)
+        if listed is None:
             raise ValueError("that is not a model this viewer lists")
-        return path
+        return listed
 
     def _handle_library_change(self, request, response):
         """Record a model this Viewer opened, or keep its picture, for every CAD view's library."""
@@ -626,8 +629,6 @@ class CadApp:
             raise ValueError("a library change is {action, file}")
         action, path = payload.get("action"), self._library_path(payload.get("file"))
         if action == "open":
-            if not os.path.isfile(path):
-                raise ValueError("no such model")
             self.recents.opened(path)
         elif action == "thumbnail":
             self.recents.thumbnail(path, thumbnail_png(payload.get("png")))

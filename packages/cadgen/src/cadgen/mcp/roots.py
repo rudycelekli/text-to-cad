@@ -126,15 +126,6 @@ class ThreadWorkspace:
     def root(self) -> Root | None:
         return Root(WORKSPACE, self.primary) if self.primary else None
 
-    def contains(self, path: str) -> str | None:
-        """The workspace folder holding ``path``, if any."""
-        real = os.path.realpath(path)
-        for folder in self._paths:
-            base = os.path.realpath(folder)
-            if real == base or real.startswith(base.rstrip(os.sep) + os.sep):
-                return folder
-        return None
-
     def accept(self, root: dict[str, Any]) -> Root:
         """Validate a root a view asks for: a workspace must be this thread's, a global root a filesystem's."""
         kind, path = root.get("kind"), root.get("path")
