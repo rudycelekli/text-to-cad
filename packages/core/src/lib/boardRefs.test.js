@@ -8,6 +8,7 @@ import {
   isBoardRefPath,
   parseBoardRefSelector,
   parseBoardRefToken,
+  splitBoardRefSelectors,
 } from "./boardRefs.js";
 
 // The same fixture cadgen/kicad/refs.py asserts: one language, two implementations.
@@ -44,6 +45,11 @@ test("tokens split their selectors outside quotes and rebuild the same", () => {
     assert.deepEqual(parseBoardRefToken(token), { path, selectors }, token);
     assert.equal(buildBoardRefToken({ path, selectors }), token);
   }
+});
+
+test("a host's list of selectors splits outside quotes", () => {
+  assert.deepEqual(splitBoardRefSelectors('#U3, #net:"a,b" ,net:VIN@x1y2,'), ["#U3", '#net:"a,b"', "net:VIN@x1y2"]);
+  assert.deepEqual(splitBoardRefSelectors(""), []);
 });
 
 test("only KiCad documents speak this language", () => {

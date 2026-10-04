@@ -140,6 +140,14 @@ function splitSelectors(text) {
 }
 
 /**
+ * A list of selectors as a host or a person writes one — comma-joined, each with or without its
+ * '#', spaces around them ignored — split outside quotes, so `#net:"a,b"` stays one. Not parsed.
+ */
+export function splitBoardRefSelectors(text) {
+  return splitSelectors(String(text ?? "")).map((piece) => piece.trim()).filter(Boolean);
+}
+
+/**
  * `<file>#<selectors>` as `{path, selectors}` (canonical selectors, in the order written), or null.
  * The file half is optional and JSON-quoted when it holds whitespace, '#', a quote or a backslash.
  */

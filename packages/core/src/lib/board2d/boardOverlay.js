@@ -4,8 +4,15 @@
  * this draws on top of it, in the same pass, so a capture of the view shows what was selected.
  *
  * `resolved` items come from an index's `resolve()` or `pick()` (`createBoardIndex`,
- * `createSchematicIndex`); geometry is in page millimetres and is mapped through the view's
- * transform here. Pure canvas 2D: the viewer and a headless capture draw the same thing.
+ * `createSchematicIndex`); geometry is in page millimetres. Pure canvas 2D: the viewer and a
+ * headless capture draw the same thing.
+ *
+ * A net can be thousands of pads and tracks, and the viewer draws this on every hover change and
+ * every frame of a pan, so shapes are drawn in PAGE space — the canvas's transform maps them,
+ * through the bottom view's mirror — each from a path made once and kept with its item (`Path2D`),
+ * and what lies off screen is left out. Each item is its own path: a canvas fills and strokes many
+ * small paths far faster than one path of them all. Widths are screen pixels, as the person reads
+ * them, whatever the zoom.
  */
 import { pageToScreen } from "../plot2d/plot.js";
 
@@ -26,48 +33,117 @@ export const SCHEMATIC_OVERLAY_COLORS = Object.freeze({
   measure: "#d97706",
   marker: "#d93025",
 });
+const PART_FILL = "rgba(141, 197, 255, 0.10)";
+const PART_PAD_FILL = "rgba(141, 197, 255, 0.35)";
+const ZONE_FILL = "rgba(141, 197, 255, 0.12)";
+const COPPER_ZONE_FILL = "rgba(141, 197, 255, 0.18)";
+// Dots (vias, junctions, a pin's end) are filled a few dozen to a path.
+const DOTS_PER_PATH = 64;
 
-// A view maps page millimetres to the screen: the transform, through the bottom view's mirror.
-function createView(transform, mirrorX) {
+/**
+ * A view of the page: `px` is one screen pixel in page millimetres, `shows(box, margin)` whether a
+ * box (page mm) reaches the screen. `transform` maps page millimetres to CSS pixels; `mirrorX` is
+ * the page x the board is mirrored about (the view from the bottom), or null.
+ */
+function createView(transform, { width, height, mirrorX = null } = {}) {
+  const scale = transform.scale;
   const project = mirrorX == null ? (x, y) => pageToScreen(transform, x, y) : (x, y) => pageToScreen(transform, 2 * mirrorX - x, y);
-  return { transform, project };
+  // The page box on screen, when the pane's size is known.
+  let visible = null;
+  if (width > 0 && height > 0) {
+    let minX = -transform.offsetX / scale; let maxX = (width - transform.offsetX) / scale;
+    if (mirrorX != null) [minX, maxX] = [2 * mirrorX - maxX, 2 * mirrorX - minX];
+    visible = [minX, -transform.offsetY / scale, maxX, (height - transform.offsetY) / scale];
+  }
+  const shows = (box, margin = 0) => !visible || !box
+    || (box[0] - margin <= visible[2] && box[2] + margin >= visible[0] && box[1] - margin <= visible[3] && box[3] + margin >= visible[1]);
+  return { transform, mirrorX, px: 1 / scale, project, shows };
 }
 
-function path(ctx, view, points, close) {
+/** Draw in page millimetres from here on: the view's transform, its mirror and the pixel ratio. */
+function pageSpace(ctx, view, pixelRatio) {
+  const { scale, offsetX, offsetY } = view.transform;
+  const s = scale * pixelRatio;
+  if (view.mirrorX == null) ctx.setTransform(s, 0, 0, s, offsetX * pixelRatio, offsetY * pixelRatio);
+  else ctx.setTransform(-s, 0, 0, s, (2 * view.mirrorX * scale + offsetX) * pixelRatio, offsetY * pixelRatio);
+}
+
+// ---- paths, in page space, made once per item -----------------------------------
+function addPoints(target, points, closed) {
+  if (points.length < 2) return;
+  target.moveTo(points[0][0], points[0][1]);
+  for (let index = 1; index < points.length; index += 1) target.lineTo(points[index][0], points[index][1]);
+  if (closed) target.closePath();
+}
+// An item's path, by its points (the index keeps them for as long as the index lives).
+const CLOSED_PATHS = new WeakMap();
+const OPEN_PATHS = new WeakMap();
+const cachePaths = typeof Path2D === "function";
+
+/** Fill and/or stroke one shape: its kept path where the canvas takes one, else drawn afresh. */
+function draw(ctx, points, closed, { fill = false, stroke = false }) {
+  if (points.length < 2) return;
+  if (cachePaths) {
+    const paths = closed ? CLOSED_PATHS : OPEN_PATHS;
+    let path = paths.get(points);
+    if (!path) { path = new Path2D(); addPoints(path, points, closed); paths.set(points, path); }
+    if (fill) ctx.fill(path);
+    if (stroke) ctx.stroke(path);
+    return;
+  }
   ctx.beginPath();
-  points.forEach(([x, y], index) => {
-    const [sx, sy] = view.project(x, y);
-    if (index === 0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy);
-  });
-  if (close) ctx.closePath();
+  addPoints(ctx, points, closed);
+  if (fill) ctx.fill();
+  if (stroke) ctx.stroke();
 }
 
-function strokePolygon(ctx, view, polygon, color, width, fill = null) {
-  if (polygon.length < 2) return;
-  path(ctx, view, polygon, true);
-  if (fill) { ctx.fillStyle = fill; ctx.fill(); }
+/** Polygons (`{ polygon, box }`), each filled (`fill`) and stroked `width` screen pixels wide. */
+function polygons(ctx, view, list, { color, width, fill = null }) {
   ctx.strokeStyle = color;
-  ctx.lineWidth = width;
-  ctx.stroke();
+  ctx.lineWidth = width * view.px;
+  ctx.lineJoin = "miter";
+  if (fill) ctx.fillStyle = fill;
+  for (const item of list) {
+    if (item.polygon.length < 2 || !view.shows(item.box, width * view.px)) continue;
+    draw(ctx, item.polygon, true, { fill: Boolean(fill), stroke: true });
+  }
 }
 
-function strokeTrack(ctx, view, track, color, minimum) {
-  path(ctx, view, track.points, false);
+/** Polylines (`{ points, box }`), each `widthOf(item)` page millimetres wide, round at their ends. */
+function strokes(ctx, view, list, color, widthOf) {
   ctx.strokeStyle = color;
   ctx.lineCap = "round";
   ctx.lineJoin = "round";
-  ctx.lineWidth = Math.max(minimum, track.width * view.transform.scale);
-  ctx.stroke();
+  for (const item of list) {
+    const width = widthOf(item);
+    if (item.points.length < 2 || !view.shows(item.box, width / 2)) continue;
+    ctx.lineWidth = width;
+    draw(ctx, item.points, false, { stroke: true });
+  }
 }
 
-function fillCircle(ctx, view, [x, y], radius, color, minimum = 0) {
-  const [sx, sy] = view.project(x, y);
-  ctx.beginPath();
-  ctx.arc(sx, sy, Math.max(minimum, radius * view.transform.scale), 0, Math.PI * 2);
+/** Dots at `item.at`, each `radiusOf(item)` page millimetres: a few dozen to a path. */
+function dots(ctx, view, list, color, radiusOf) {
   ctx.fillStyle = color;
-  ctx.fill();
+  let pending = 0;
+  ctx.beginPath();
+  for (const item of list) {
+    const [x, y] = item.at;
+    const radius = radiusOf(item);
+    if (!view.shows([x, y, x, y], radius)) continue;
+    ctx.moveTo(x + radius, y);
+    ctx.arc(x, y, radius, 0, Math.PI * 2);
+    pending += 1;
+    if (pending === DOTS_PER_PATH) { ctx.fill(); ctx.beginPath(); pending = 0; }
+  }
+  if (pending) ctx.fill();
 }
 
+// A track at least `minimum` screen pixels wide; a via's dot at least `minimum` pixels across its radius.
+const trackWidth = (view, minimum) => (track) => Math.max(minimum * view.px, track.width);
+const viaRadius = (view, minimum) => (via) => Math.max(minimum * view.px, via.diameter / 2);
+
+// ---- screen space: what keeps its size in pixels ---------------------------------
 function crosshair(ctx, view, [x, y], color, size = 7) {
   const [sx, sy] = view.project(x, y);
   ctx.strokeStyle = color;
@@ -81,69 +157,69 @@ function crosshair(ctx, view, [x, y], color, size = 7) {
   ctx.stroke();
 }
 
-function drawCopperItem(ctx, view, item, color) {
-  if (!item) return;
-  if (item.kind === "track") strokeTrack(ctx, view, item, color, 3);
-  else if (item.kind === "via") fillCircle(ctx, view, item.at, item.diameter / 2, color, 3);
-  else if (item.kind === "zone") strokePolygon(ctx, view, item.outline, color, 2, "rgba(141, 197, 255, 0.18)");
-}
-
-function strokeLine(ctx, view, points, color, width) {
-  path(ctx, view, points, false);
-  ctx.strokeStyle = color;
-  ctx.lineCap = "round";
-  ctx.lineJoin = "round";
-  ctx.lineWidth = width;
-  ctx.stroke();
-}
-
 // A schematic pin: its line from the body out to where a wire meets it, and a dot there.
-function strokePin(ctx, view, pin, color, width) {
-  if (pin.hidden) return;
-  strokeLine(ctx, view, [pin.end, pin.at], color, width);
-  fillCircle(ctx, view, pin.at, 0, color, width + 0.75);
+const PIN_LINES = new WeakMap();
+function pins(ctx, view, list, color, width) {
+  const shown = list.filter((pin) => !pin.hidden && view.shows(pin.box, (width + 0.75) * view.px));
+  if (!shown.length) return;
+  const lines = shown.map((pin) => {
+    let line = PIN_LINES.get(pin);
+    if (!line) { line = { points: [pin.end, pin.at], box: pin.box }; PIN_LINES.set(pin, line); }
+    return line;
+  });
+  strokes(ctx, view, lines, color, () => width * view.px);
+  dots(ctx, view, shown, color, () => (width + 0.75) * view.px);
 }
 
-/** One resolved schematic reference (or hit), highlighted in `color`. */
-export function drawSchematicResolved(ctx, view, resolved, { color, fill, weight = 1 }) {
+/**
+ * One resolved schematic reference (or hit), highlighted in `color`, in page space (`pageSpace`).
+ * `shapesOf(pin)`: every drawing of that pin (`index.shapesOf`).
+ */
+export function drawSchematicResolved(ctx, view, resolved, { color, fill, weight = 1, shapesOf = null }) {
   if (!resolved) return;
-  const shapesOf = (pad) => pad.part.pads.filter((shape) => shape.number === pad.number);
+  const drawings = shapesOf || ((pad) => pad.part.pads.filter((shape) => shape.number === pad.number));
   if (resolved.kind === "part") {
-    for (const unit of resolved.part.units) strokePolygon(ctx, view, unit.outline, color, 2 * weight, fill);
-    for (const pin of resolved.part.pads) strokePin(ctx, view, pin, color, 1.5 * weight);
+    polygons(ctx, view, resolved.part.units.map((unit) => ({ polygon: unit.outline, box: unit.box })), { color, width: 2 * weight, fill });
+    pins(ctx, view, resolved.part.pads, color, 1.5 * weight);
   } else if (resolved.kind === "pad") {
-    for (const pin of shapesOf(resolved.pad)) strokePin(ctx, view, pin, color, 2.5 * weight);
+    pins(ctx, view, drawings(resolved.pad), color, 2.5 * weight);
   } else if (resolved.kind === "net") {
     const net = resolved.net;
-    for (const wire of net.wires) strokeLine(ctx, view, wire.points, color, 2.5 * weight);
-    for (const label of net.labels) strokePolygon(ctx, view, label.outline, color, 1.5 * weight, fill);
-    for (const junction of net.junctions) fillCircle(ctx, view, junction.at, 0, color, 3.5 * weight);
-    for (const pad of net.pads) for (const pin of shapesOf(pad)) strokePin(ctx, view, pin, color, 2 * weight);
+    strokes(ctx, view, net.wires, color, () => 2.5 * weight * view.px);
+    polygons(ctx, view, net.labels.map((label) => ({ polygon: label.outline, box: label.box })), { color, width: 1.5 * weight, fill });
+    dots(ctx, view, net.junctions, color, () => 3.5 * weight * view.px);
+    pins(ctx, view, net.pads.flatMap(drawings), color, 2 * weight);
   }
 }
 
-/** One resolved board reference (or hit), highlighted in `color`. */
-export function drawResolved(ctx, view, resolved, { color, toPage, weight = 1 }) {
+/**
+ * One resolved board reference (or hit), highlighted in `color`. Its shapes are drawn in page
+ * space (`pageSpace`); a point's crosshair keeps its size on screen, so it is handed back in
+ * `crosshairs` for the caller to draw once the context is in pixels again. `shapesOf(pad)`: a pin's
+ * pads (`index.shapesOf`).
+ */
+export function drawResolved(ctx, view, resolved, { color, toPage, weight = 1, shapesOf = null, crosshairs = null }) {
   if (!resolved) return;
   const kind = resolved.kind;
-  const pinPads = (pad) => pad.part.pads.filter((shape) => shape.number === pad.number);
+  const pinPads = shapesOf || ((pad) => pad.part.pads.filter((shape) => shape.number === pad.number));
   if (kind === "part") {
     const part = resolved.part;
-    strokePolygon(ctx, view, part.outline, color, 2 * weight, "rgba(141, 197, 255, 0.10)");
-    for (const pad of part.pads) strokePolygon(ctx, view, pad.polygon, color, 1, "rgba(141, 197, 255, 0.35)");
+    polygons(ctx, view, [{ polygon: part.outline, box: part.box }], { color, width: 2 * weight, fill: PART_FILL });
+    polygons(ctx, view, part.pads, { color, width: 1, fill: PART_PAD_FILL });
   } else if (kind === "pad") {
-    for (const shape of pinPads(resolved.pad)) strokePolygon(ctx, view, shape.polygon, color, 1.5 * weight, color);
+    polygons(ctx, view, pinPads(resolved.pad), { color, width: 1.5 * weight, fill: color });
   } else if (kind === "net") {
     const net = resolved.net;
-    for (const zone of net.zones) strokePolygon(ctx, view, zone.outline, color, 1.5, "rgba(141, 197, 255, 0.12)");
-    for (const track of net.tracks) strokeTrack(ctx, view, track, color, 2);
-    for (const via of net.vias) fillCircle(ctx, view, via.at, via.diameter / 2, color, 2.5);
-    for (const pad of net.pads) for (const shape of pinPads(pad)) strokePolygon(ctx, view, shape.polygon, color, 1, color);
-  } else if (kind === "copper") {
-    drawCopperItem(ctx, view, resolved.item, color);
-    crosshair(ctx, view, resolved.page || toPage(resolved.at), color);
-  } else if (kind === "point") {
-    crosshair(ctx, view, resolved.page || toPage(resolved.at), color);
+    polygons(ctx, view, net.zones.map((zone) => ({ polygon: zone.outline, box: zone.box })), { color, width: 1.5, fill: ZONE_FILL });
+    strokes(ctx, view, net.tracks, color, trackWidth(view, 2));
+    dots(ctx, view, net.vias, color, viaRadius(view, 2.5));
+    polygons(ctx, view, net.pads.flatMap(pinPads), { color, width: 1, fill: color });
+  } else if (kind === "copper" || kind === "point") {
+    const item = kind === "copper" ? resolved.item : null;
+    if (item?.kind === "track") strokes(ctx, view, [item], color, trackWidth(view, 3));
+    else if (item?.kind === "via") dots(ctx, view, [item], color, viaRadius(view, 3));
+    else if (item?.kind === "zone") polygons(ctx, view, [{ polygon: item.outline, box: item.box }], { color, width: 2, fill: COPPER_ZONE_FILL });
+    crosshairs?.push({ at: resolved.page || toPage(resolved.at), color });
   }
 }
 
@@ -160,21 +236,27 @@ export function drawResolved(ctx, view, resolved, { color, toPage, weight = 1 })
  */
 export function drawBoardOverlay(ctx, index, { transform, pixelRatio = 1, width, height, hover = null, selection = [], dim = false,
   measure = null, markers = [], mirrorX = null, colors = null }) {
-  if (!ctx || !index || !transform) return;
+  if (!ctx || !index || !transform || !(transform.scale > 0)) return;
   const schematic = index.document === "schematic";
   colors = colors || (schematic ? SCHEMATIC_OVERLAY_COLORS : BOARD_OVERLAY_COLORS);
-  const view = createView(transform, mirrorX);
-  const draw = schematic
-    ? (resolved, options) => drawSchematicResolved(ctx, view, resolved, { ...options, fill: colors.fill })
-    : (resolved, options) => drawResolved(ctx, view, resolved, { ...options, toPage: index.toPage });
+  const view = createView(transform, { width, height, mirrorX });
+  const shapesOf = index.shapesOf || null;
+  const crosshairs = [];
+  const highlight = schematic
+    ? (resolved, options) => drawSchematicResolved(ctx, view, resolved, { ...options, fill: colors.fill, shapesOf })
+    : (resolved, options) => drawResolved(ctx, view, resolved, { ...options, toPage: index.toPage, shapesOf, crosshairs });
   ctx.save();
   ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
   if (dim && selection.length) {
     ctx.fillStyle = colors.dim;
     ctx.fillRect(0, 0, width, height);
   }
-  for (const resolved of selection) draw(resolved, { color: colors.selection, weight: 1.25 });
-  if (hover && !selection.some((resolved) => resolved.selector === hover.selector)) draw(hover, { color: colors.hover });
+  pageSpace(ctx, view, pixelRatio);
+  for (const resolved of selection) highlight(resolved, { color: colors.selection, weight: 1.25 });
+  if (hover && !selection.some((resolved) => resolved.selector === hover.selector)) highlight(hover, { color: colors.hover });
+  // Back to screen pixels: the crosshairs, a check's rings and a measurement keep their size.
+  ctx.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+  for (const { at, color } of crosshairs) crosshair(ctx, view, at, color);
   for (const marker of markers) {
     ctx.strokeStyle = colors.marker;
     ctx.lineWidth = 2;
@@ -184,14 +266,20 @@ export function drawBoardOverlay(ctx, index, { transform, pixelRatio = 1, width,
     ctx.stroke();
   }
   if (measure && measure.points.length) {
-    const points = measure.draft ? [...measure.points, measure.draft] : measure.points;
+    const points = (measure.draft ? [...measure.points, measure.draft] : measure.points).map(([x, y]) => view.project(x, y));
     ctx.setLineDash([5, 4]);
-    path(ctx, view, points, false);
+    ctx.beginPath();
+    points.forEach(([sx, sy], at) => { if (at === 0) ctx.moveTo(sx, sy); else ctx.lineTo(sx, sy); });
     ctx.strokeStyle = colors.measure;
     ctx.lineWidth = 1.5;
     ctx.stroke();
     ctx.setLineDash([]);
-    for (const at of points) fillCircle(ctx, view, at, 0, colors.measure, 3.5);
+    ctx.fillStyle = colors.measure;
+    for (const [sx, sy] of points) {
+      ctx.beginPath();
+      ctx.arc(sx, sy, 3.5, 0, Math.PI * 2);
+      ctx.fill();
+    }
   }
   ctx.restore();
 }

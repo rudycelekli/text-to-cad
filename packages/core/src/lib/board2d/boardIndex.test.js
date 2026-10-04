@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createBoardIndex, pointInPolygon } from "./boardIndex.js";
+import { createBoardIndex, nearestOnSegment, pointInPolygon } from "./boardIndex.js";
 import { drawBoardOverlay } from "./boardOverlay.js";
 
 // A 40 x 30 mm sheet whose script origin sits at sheet (5, 25): script (10, 5) is sheet (15, 20).
@@ -94,15 +94,141 @@ test("checks keep their items' references and places", () => {
   assert.ok(pointInPolygon([1, 1], [[0, 0], [2, 0], [2, 2], [0, 2]]));
 });
 
-test("the overlay draws a selection, a hover and a measurement without throwing", () => {
-  const calls = [];
-  const ctx = new Proxy({}, { get: (target, key) => (key in target ? target[key] : (...args) => calls.push(key)), set: (target, key, value) => { target[key] = value; return true; } });
+// A context that keeps what was filled and stroked, in device pixels, through the transforms set.
+export function recordingContext() {
+  let matrix = [1, 0, 0, 1, 0, 0];
+  let points = [];
+  const stack = [];
+  const marks = [];
+  const apply = (x, y) => [matrix[0] * x + matrix[2] * y + matrix[4], matrix[1] * x + matrix[3] * y + matrix[5]];
+  const ctx = {
+    save() { stack.push(matrix); }, restore() { matrix = stack.pop(); },
+    setTransform(a, b, c, d, e, f) { matrix = [a, b, c, d, e, f]; },
+    beginPath() { points = []; }, closePath() {}, setLineDash() {},
+    moveTo(x, y) { points.push(apply(x, y)); }, lineTo(x, y) { points.push(apply(x, y)); }, arc(x, y) { points.push(apply(x, y)); },
+    fillRect() { marks.push({ op: "fillRect", style: ctx.fillStyle, points: [] }); },
+    fill() { marks.push({ op: "fill", style: ctx.fillStyle, points }); },
+    stroke() { marks.push({ op: "stroke", style: ctx.strokeStyle, points }); },
+  };
+  const boxOf = (list) => [Math.min(...list.map((p) => p[0])), Math.min(...list.map((p) => p[1])), Math.max(...list.map((p) => p[0])), Math.max(...list.map((p) => p[1]))];
+  return { ctx, marks, filled: (style) => marks.filter((mark) => mark.op === "fill" && mark.style === style).map((mark) => boxOf(mark.points)) };
+}
+
+test("the overlay draws the selection where it is, and from the bottom where the mirror puts it", () => {
   const index = createBoardIndex(BOARD);
+  const frame = { transform: { scale: 10, offsetX: 0, offsetY: 0 }, pixelRatio: 2, width: 400, height: 300 };
+  const selected = (mirrorX = null) => {
+    const { ctx, filled } = recordingContext();
+    drawBoardOverlay(ctx, index, { ...frame, mirrorX, selection: [index.resolve("#R1.1")] });
+    return filled("#8dc5ff");
+  };
+  // R1.1 spans x 13.775..14.575, y 19.525..20.475 mm: at 10 px/mm and a pixel ratio of 2, x 275.5..291.5.
+  const [top] = selected();
+  assert.deepEqual(top.map((v) => Math.round(v * 10) / 10), [275.5, 390.5, 291.5, 409.5]);
+  // Seen from the bottom, mirrored about x = 20: x 25.425..26.225 mm.
+  const [bottom] = selected(20);
+  assert.deepEqual(bottom.map((v) => Math.round(v * 10) / 10), [508.5, 390.5, 524.5, 409.5]);
+});
+
+test("a net is highlighted whole, a check rung, and what is off screen left out", () => {
+  const index = createBoardIndex(BOARD);
+  const { ctx, marks, filled } = recordingContext();
   drawBoardOverlay(ctx, index, {
     transform: { scale: 10, offsetX: 0, offsetY: 0 }, width: 400, height: 300, dim: true,
-    selection: [index.resolve("#net:GND"), index.resolve("#R1")], hover: index.resolve("#U1.2"),
-    measure: { points: [[14.175, 20]], draft: [20, 15] }, markers: [[15, 20]],
+    selection: [index.resolve("#net:GND")], hover: index.resolve("#U1.2"), markers: [[15, 20]],
+    measure: { points: [[14.175, 20]], draft: [20, 15] },
   });
-  assert.ok(calls.includes("fillRect"), "the rest of the board steps back");
-  assert.ok(calls.filter((call) => call === "stroke").length > 5);
+  assert.equal(marks[0].op, "fillRect", "the rest of the board steps back first");
+  // R1.2 and both pads of U1.3, and the via: GND's copper.
+  assert.equal(filled("#8dc5ff").length, 4);
+  assert.equal(filled("rgba(141, 197, 255, 0.55)").length, 1, "the hovered pad");
+  // Zoomed in on the top-left corner, at 100 px/mm, R1 and U1 lie off screen: only the pour is drawn.
+  const zoomed = recordingContext();
+  drawBoardOverlay(zoomed.ctx, index, { transform: { scale: 100, offsetX: 0, offsetY: 0 }, width: 400, height: 300, selection: [index.resolve("#net:GND")] });
+  assert.equal(zoomed.filled("#8dc5ff").length, 0);
+  assert.equal(zoomed.filled("rgba(141, 197, 255, 0.12)").length, 1, "the pour reaches the corner");
+});
+
+// What a pick and a snap must answer, worked out the slow way: every item tested, none skipped.
+function scanPick(index, at, { mode, view, tolerance }) {
+  const facing = (side) => {
+    const front = side === "top" || side === "front"; const back = side === "bottom" || side === "back";
+    if (side === "both") return 0;
+    return view === "bottom" ? (back ? 0 : front ? 2 : 1) : (front ? 0 : back ? 2 : 1);
+  };
+  const layerSide = (layer) => (layer.startsWith("F.") ? "front" : layer.startsWith("B.") ? "back" : "inner");
+  const near = (polygon) => {
+    if (pointInPolygon(at, polygon)) return 0;
+    return Math.min(...polygon.map((p, i) => nearestOnSegment(at, p, polygon[(i + 1) % polygon.length]).distance));
+  };
+  const found = [];
+  if (mode !== "parts") index.padShapes.forEach((shape, order) => {
+    const distance = near(shape.polygon);
+    if (distance <= tolerance) found.push({ rank: 0, side: facing(shape.side), size: shape.area, distance, order, selector: mode === "nets" ? (shape.net ? `#net:${shape.net}` : null) : `#${shape.ref}.${shape.number}` });
+  });
+  if (mode === "all" || mode === "nets") {
+    index.vias.forEach((via, order) => {
+      const distance = Math.hypot(at[0] - via.at[0], at[1] - via.at[1]) - via.diameter / 2;
+      if (distance <= tolerance) found.push({ rank: 1, side: 0, size: via.diameter, distance: Math.max(0, distance), order, net: via.net });
+    });
+    index.tracks.forEach((track, order) => {
+      const distance = Math.min(...track.points.slice(1).map((p, i) => nearestOnSegment(at, track.points[i], p).distance)) - track.width / 2;
+      if (distance <= tolerance) found.push({ rank: 2, side: facing(layerSide(track.layer)), size: track.width, distance: Math.max(0, distance), order, net: track.net });
+    });
+  }
+  if (mode === "all" || mode === "parts") [...index.parts.values()].forEach((part, order) => {
+    if (part.outline.length > 2 && pointInPolygon(at, part.outline)) found.push({ rank: mode === "parts" ? 0 : 3, side: facing(part.side), size: part.area, distance: 0, order, selector: `#${part.ref}` });
+  });
+  if (mode === "nets") index.zones.forEach((zone, order) => {
+    if (pointInPolygon(at, zone.outline)) found.push({ rank: 4, side: facing(layerSide(zone.layer)), size: zone.area, distance: 0, order, net: zone.net });
+  });
+  found.sort((a, b) => a.side - b.side || a.rank - b.rank || a.distance - b.distance || a.size - b.size || a.order - b.order);
+  for (const hit of found) {
+    if (hit.selector !== undefined) { if (hit.selector) return hit.selector; continue; }
+    if (hit.net) return mode === "nets" ? `#net:${hit.net}` : `#net:${hit.net}@`;
+  }
+  return null;
+}
+
+test("a pick and a snap answer what a scan of the whole board would", () => {
+  // A seeded board of a few hundred pads and tracks, dense enough that most presses land on something.
+  let state = 9;
+  const random = () => { state = (state * 1664525 + 1013904223) >>> 0; return state / 4294967296; };
+  const parts = []; const pads = []; const tracks = []; const vias = [];
+  for (let at = 0; at < 60; at += 1) {
+    const cx = 2 + random() * 56; const cy = 2 + random() * 36;
+    parts.push({ ref: `U${at}`, side: at % 3 ? "top" : "bottom", at: [cx, cy], outline: rect(cx, cy, 3, 2) });
+    for (let pin = 1; pin <= 4; pin += 1) pads.push({ part: `U${at}`, number: String(pin), net: `N${(at + pin) % 9}`, side: at % 3 ? "top" : "bottom", polygon: rect(cx - 1.5 + pin * 0.6, cy - 0.8, 0.4, 0.5) });
+  }
+  for (let at = 0; at < 200; at += 1) {
+    const x = random() * 60; const y = random() * 40; const length = random() * 25;
+    tracks.push({ net: at % 5 ? `N${at % 9}` : "", layer: at % 2 ? "F.Cu" : "B.Cu", width: 0.2 + random() * 0.3, points: [[x, y], [x + length * (random() - 0.5), y + length * (random() - 0.5)]] });
+  }
+  for (let at = 0; at < 40; at += 1) vias.push({ net: `N${at % 9}`, at: [random() * 60, random() * 40], diameter: 0.6 });
+  const board = { origin: [0, 40], parts, pads, tracks, vias, zones: [{ net: "N0", layer: "B.Cu", outline: rect(30, 20, 50, 30) }], holes: [], outline: [], findings: [] };
+  const index = createBoardIndex(board);
+  for (let press = 0; press < 250; press += 1) {
+    const at = [random() * 60, random() * 40];
+    for (const mode of ["all", "parts", "pads", "nets"]) {
+      for (const [view, tolerance] of [["top", 0.3], ["bottom", 1.2], ["top", 0]]) {
+        const picked = index.pick(at, { mode, view, tolerance })?.selector ?? null;
+        const expected = scanPick(index, at, { mode, view, tolerance });
+        assert.equal(expected?.endsWith("@") ? picked?.replace(/@x.*$/, "@") : picked, expected, JSON.stringify({ at, mode, view, tolerance }));
+      }
+    }
+    const snapped = index.snap(at, { tolerance: 1.5 });
+    const targets = [...index.pads.values()].map((pad) => pad.at).concat(index.vias.map((via) => via.at), index.tracks.flatMap((track) => [track.points[0], track.points.at(-1)]));
+    const nearest = Math.min(...targets.map((target) => Math.hypot(at[0] - target[0], at[1] - target[1])));
+    assert.equal(snapped ? snapped.distance : null, nearest <= 1.5 ? nearest : null, JSON.stringify(at));
+  }
+});
+
+test("past copper on no net, a pick takes what lies under it", () => {
+  const board = { ...BOARD, tracks: [...BOARD.tracks, { net: "", layer: "F.Cu", width: 0.4, points: [[13, 20], [17, 20]] }],
+    pads: [...BOARD.pads, { part: "R1", number: "3", name: "", net: "", type: "passive", side: "top", at: [15, 21], polygon: rect(15, 21, 0.4, 0.4) }] };
+  const index = createBoardIndex(board);
+  // Under All, the net-less track over R1's body is no answer: R1 is.
+  assert.equal(index.pick([15, 20]).selector, "#R1");
+  // Under Nets, a pad on no net inside the ground pour is the pour's net.
+  assert.equal(index.pick([15, 21], { mode: "nets" }).selector, "#net:GND");
 });

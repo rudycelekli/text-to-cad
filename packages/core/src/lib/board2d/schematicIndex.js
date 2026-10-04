@@ -12,10 +12,12 @@
  *
  * It wears a board index's face where the viewer reads both (`boardIndex.js`): `document`, `parts`
  * (each with its pins as `pads`), `pads` (a pin by `U3.9`), `nets` (each with its pins as `pads`),
- * `findings`, `pick`, `resolve` and `extent`. Pure, and a flat scan, as the board's.
+ * `findings`, `pick`, `resolve` and `extent`. Pure, and found through a grid of the page
+ * (`spatialGrid.js`), as the board's.
  */
 import { formatBoardRefSelector, parseBoardRefSelector } from "../boardRefs.js";
 import { nearestOnSegment, pointInPolygon, polygonArea } from "./boardIndex.js";
+import { boxOf, createSpatialGrid, nearBox } from "./spatialGrid.js";
 
 const EMPTY = Object.freeze([]);
 // A pin and a wire are hairlines: how far off one a press still lands on it (page millimetres), and
@@ -97,7 +99,7 @@ export function createSchematicIndex(schematic, layoutSheets = EMPTY) {
       return {
         unit: Number(unit?.unit) || 1, sheet: Number(unit?.sheet) || 0, sheetName: sheets[Number(unit?.sheet) || 0]?.name ?? "",
         at: page(unit?.at, unit?.sheet), rotation: Number(unit?.rotation) || 0, mirror: unit?.mirror === "x" || unit?.mirror === "y" ? unit.mirror : null,
-        outline, area: outline.length > 2 ? polygonArea(outline) : Infinity
+        outline, area: outline.length > 2 ? polygonArea(outline) : Infinity, box: outline.length > 2 ? boxOf(outline) : null
       };
     }).filter((unit) => unit.at || unit.outline.length);
     parts.set(ref, {
@@ -111,30 +113,37 @@ export function createSchematicIndex(schematic, layoutSheets = EMPTY) {
   // picks it, the first names it.
   const pads = new Map();
   const pinShapes = [];
+  // Each pin's drawings, by `U3.9`: a pin is highlighted as all of them.
+  const shapesByPin = new Map();
   for (const entry of schematic?.pins || EMPTY) {
     const part = parts.get(String(entry?.part || ""));
     const number = String(entry?.number ?? "");
     const at = page(entry?.at, entry?.sheet);
     if (!part || !number || !at) continue;
+    const end = page(entry.end, entry.sheet) || at;
     const pin = {
       kind: "pad", ref: part.ref, number, name: String(entry.name ?? ""), net: String(entry.net ?? ""), type: String(entry.type ?? ""),
-      unit: Number(entry.unit) || 1, sheet: Number(entry.sheet) || 0, at, end: page(entry.end, entry.sheet) || at, hidden: Boolean(entry.hidden), part
+      unit: Number(entry.unit) || 1, sheet: Number(entry.sheet) || 0, at, end, hidden: Boolean(entry.hidden), part, box: boxOf([at, end])
     };
     pinShapes.push(pin);
     part.pads.push(pin);
     const key = `${part.ref}.${number}`;
-    if (pads.has(key)) continue;
+    if (pads.has(key)) { shapesByPin.get(key).push(pin); continue; }
     pads.set(key, pin);
+    shapesByPin.set(key, [pin]);
     netNamed(pin.net)?.pads.push(pin);
   }
 
-  const wires = (schematic?.wires || EMPTY).map((entry) => ({ kind: "wire", net: String(entry?.net ?? ""), points: pageList(entry?.points, entry?.sheet) }))
-    .filter((wire) => wire.points.length > 1);
+  const wires = (schematic?.wires || EMPTY).map((entry) => {
+    const points = pageList(entry?.points, entry?.sheet);
+    return { kind: "wire", net: String(entry?.net ?? ""), points, box: boxOf(points) };
+  }).filter((wire) => wire.points.length > 1);
   const labels = (schematic?.labels || EMPTY).map((entry) => {
     const outline = pageList(entry?.outline, entry?.sheet);
+    const at = page(entry?.at, entry?.sheet);
     return {
       kind: "label", net: String(entry?.net ?? ""), text: String(entry?.text ?? ""), type: String(entry?.kind ?? "local"),
-      at: page(entry?.at, entry?.sheet), outline, area: outline.length > 2 ? polygonArea(outline) : Infinity
+      at, outline, area: outline.length > 2 ? polygonArea(outline) : Infinity, box: outline.length > 2 ? boxOf(outline) : at ? boxOf([at]) : null
     };
   }).filter((label) => label.at);
   const junctions = (schematic?.junctions || EMPTY).map((entry) => ({ kind: "junction", net: String(entry?.net ?? ""), at: page(entry?.at, entry?.sheet) }))
@@ -142,6 +151,20 @@ export function createSchematicIndex(schematic, layoutSheets = EMPTY) {
   for (const wire of wires) netNamed(wire.net)?.wires.push(wire);
   for (const label of labels) netNamed(label.net)?.labels.push(label);
   for (const junction of junctions) netNamed(junction.net)?.junctions.push(junction);
+
+  // ---- what is near a point --------------------------------------------------
+  // Each kind in a grid of its own; `order` is a hit's place among them all (pins, labels, wires,
+  // junctions, symbols' units), which decides between two hits that are otherwise alike.
+  const pinGrid = createSpatialGrid(pinShapes.map((pin) => (pin.hidden ? null : pin.box)));
+  const labelGrid = createSpatialGrid(labels.map((label) => label.box));
+  const wireGrid = createSpatialGrid(wires.map((wire) => wire.box));
+  const junctionGrid = createSpatialGrid(junctions.map((junction) => boxOf([junction.at])));
+  const units = [...parts.values()].flatMap((part) => part.units.filter((unit) => unit.outline.length > 2).map((unit) => ({ part, unit })));
+  const unitGrid = createSpatialGrid(units.map(({ unit }) => unit.box));
+  const LABELS_FROM = pinShapes.length;
+  const WIRES_FROM = LABELS_FROM + labels.length;
+  const JUNCTIONS_FROM = WIRES_FROM + wires.length;
+  const UNITS_FROM = JUNCTIONS_FROM + junctions.length;
 
   // ---- picking ---------------------------------------------------------------
   /**
@@ -151,40 +174,51 @@ export function createSchematicIndex(schematic, layoutSheets = EMPTY) {
    * millimetres a hairline may be missed by.
    */
   function pick(at, { mode = "all", tolerance = 0 } = {}) {
+    if (!point(at)) return null;
+    const reach = Math.max(0, Number(tolerance) || 0);
+    const [x, y] = at;
     const candidates = [];
-    const consider = (rank, distance, size, hit) => candidates.push({ rank, distance, size, hit });
-    for (const pin of pinShapes) {
-      if (pin.hidden) continue;
+    const consider = (rank, distance, size, order, hit) => candidates.push({ rank, distance, size, order, hit });
+    const near = (grid, slop, fn) => grid.visit(x - slop, y - slop, x + slop, y + slop, fn);
+    near(pinGrid, PIN_REACH + reach, (order) => {
+      const pin = pinShapes[order];
+      if (!nearBox(pin.box, at, PIN_REACH + reach)) return;
       const distance = nearestOnSegment(at, pin.at, pin.end).distance;
-      if (distance <= PIN_REACH + tolerance) consider(mode === "parts" ? 1 : 0, distance, 0, { kind: "pad", pad: pads.get(`${pin.ref}.${pin.number}`) || pin });
-    }
+      if (distance <= PIN_REACH + reach) consider(mode === "parts" ? 1 : 0, distance, 0, order, { kind: "pad", pad: pads.get(`${pin.ref}.${pin.number}`) || pin });
+    });
     if (mode === "all" || mode === "nets") {
-      for (const label of labels) {
-        const distance = label.outline.length > 2 ? polygonDistance(at, label.outline) : Math.hypot(at[0] - label.at[0], at[1] - label.at[1]);
-        if (distance <= tolerance) consider(1, distance, label.area, { kind: "label", item: label });
-      }
-      for (const wire of wires) {
+      near(labelGrid, reach, (order) => {
+        const label = labels[order];
+        if (!nearBox(label.box, at, reach)) return;
+        const distance = label.outline.length > 2 ? polygonDistance(at, label.outline) : Math.hypot(x - label.at[0], y - label.at[1]);
+        if (distance <= reach) consider(1, distance, label.area, LABELS_FROM + order, { kind: "label", item: label });
+      });
+      near(wireGrid, WIRE_REACH + reach, (order) => {
+        const wire = wires[order];
+        if (!nearBox(wire.box, at, WIRE_REACH + reach)) return;
         let distance = Infinity;
         for (let index = 1; index < wire.points.length; index += 1) distance = Math.min(distance, nearestOnSegment(at, wire.points[index - 1], wire.points[index]).distance);
-        if (distance <= WIRE_REACH + tolerance) consider(2, distance, 0, { kind: "wire", item: wire });
-      }
-      for (const junction of junctions) {
-        const distance = Math.hypot(at[0] - junction.at[0], at[1] - junction.at[1]);
-        if (distance <= JUNCTION_REACH + tolerance) consider(2, distance, 0, { kind: "junction", item: junction });
-      }
+        if (distance <= WIRE_REACH + reach) consider(2, distance, 0, WIRES_FROM + order, { kind: "wire", item: wire });
+      });
+      near(junctionGrid, JUNCTION_REACH + reach, (order) => {
+        const junction = junctions[order];
+        const distance = Math.hypot(x - junction.at[0], y - junction.at[1]);
+        if (distance <= JUNCTION_REACH + reach) consider(2, distance, 0, JUNCTIONS_FROM + order, { kind: "junction", item: junction });
+      });
     }
     if (mode === "all" || mode === "parts") {
-      for (const part of parts.values()) {
-        for (const unit of part.units) {
-          if (unit.outline.length > 2 && pointInPolygon(at, unit.outline)) consider(mode === "parts" ? 0 : 3, 0, unit.area, { kind: "part", part });
-        }
-      }
+      near(unitGrid, 0, (order) => {
+        const { part, unit } = units[order];
+        if (nearBox(unit.box, at, 0) && pointInPolygon(at, unit.outline)) consider(mode === "parts" ? 0 : 3, 0, unit.area, UNITS_FROM + order, { kind: "part", part });
+      });
     }
     // A mode that does not take a kind's own pick still lets it lead to what the mode takes.
-    const usable = candidates.map((candidate) => ({ ...candidate, found: describeHit(candidate.hit, mode) })).filter((candidate) => candidate.found);
-    if (!usable.length) return null;
-    usable.sort((a, b) => a.rank - b.rank || a.distance - b.distance || a.size - b.size);
-    return usable[0].found;
+    candidates.sort((a, b) => a.rank - b.rank || a.distance - b.distance || a.size - b.size || a.order - b.order);
+    for (const candidate of candidates) {
+      const found = describeHit(candidate.hit, mode);
+      if (found) return found;
+    }
+    return null;
   }
 
   function describeHit(hit, mode) {
@@ -222,7 +256,8 @@ export function createSchematicIndex(schematic, layoutSheets = EMPTY) {
   }
 
   const pinPoints = (pin) => [pin.at, pin.end];
-  const shapesOf = (pad) => pad.part.pads.filter((shape) => shape.number === pad.number);
+  /** A pin's drawings: the one that names it and any other unit's drawing of it. */
+  const shapesOf = (pad) => shapesByPin.get(`${pad.ref}.${pad.number}`) || [pad];
 
   /** Where a resolved reference is on the page, as a box to frame: `[minX, minY, maxX, maxY]`. */
   function extent(resolved) {
